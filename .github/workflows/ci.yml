@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: "read"
+  repository-projects: "read"
+  id-token: "write"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...

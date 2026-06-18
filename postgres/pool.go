@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log"
 	"log/slog"
 	"net"
@@ -29,7 +28,7 @@ var (
 // The caller supplies the DBConfig (typically from AppConfig.DBConfig).
 // The pool is created on the first call and reused on subsequent calls.
 // A SIGTERM/SIGINT handler is registered to gracefully close the pool on shutdown.
-func OpenPool(ctx context.Context, dbcfg DBConfig, fsys fs.FS) (*pgxpool.Pool, error) {
+func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
 	poolOnce.Do(func() {
 		if dbcfg.CloudSQLInstance != "" {
 			sharedPool, sharedPoolErr = openCloudSQL(ctx, dbcfg)
@@ -39,7 +38,7 @@ func OpenPool(ctx context.Context, dbcfg DBConfig, fsys fs.FS) (*pgxpool.Pool, e
 		if sharedPoolErr != nil {
 			return
 		}
-		if sharedPoolErr = runMigrations(ctx, sharedPool, fsys); sharedPoolErr != nil {
+		if sharedPoolErr = runMigrations(ctx, sharedPool, migrator); sharedPoolErr != nil {
 			return
 		}
 		go gracefulShutdown()

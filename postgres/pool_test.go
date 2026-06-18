@@ -19,14 +19,14 @@ import (
 //go:embed testdata/migrations
 var testMigrationsFS embed.FS
 
-var testMigrations fs.FS
+var testMigrations *Migrator
 
 func init() {
 	sub, err := fs.Sub(testMigrationsFS, "testdata/migrations")
 	if err != nil {
 		panic(err)
 	}
-	testMigrations = sub
+	testMigrations = NewMigrator(sub, nil)
 }
 
 func TestMain(m *testing.M) {

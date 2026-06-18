@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"time"
 
-	atlasschema "ariga.io/atlas/sql/schema"
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/postgres"
+	atlasschema "ariga.io/atlas/sql/schema"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -20,10 +20,33 @@ import (
 // advisoryLockKey is a stable application-wide lock key for serialising migrations across replicas.
 const advisoryLockKey = int64(773492011)
 
-// runMigrations applies all pending versioned migrations from the provided FS.
-// It acquires a PostgreSQL advisory lock to prevent concurrent replicas from racing.
-// Returns a non-nil error if any migration fails; callers must not start the server in that case.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
+// Migrator bundles the migration file source with a caller-supplied baseline
+// predicate. It is passed to OpenPool (and internally to runMigrations) so that
+// the baseline decision is made by the caller rather than hard-coded.
+type Migrator struct {
+	migrationFiles fs.FS
+	// IsBaseline is invoked by runMigrations to determine whether the current
+	// run should only record a baseline (i.e. mark existing migrations as
+	// already applied without executing their SQL). A nil func disables
+	// baseline handling entirely.
+	IsBaseline func(ctx context.Context, pool *pgxpool.Pool) bool
+}
+
+// NewMigrator creates a Migrator with the supplied migration file source and
+// baseline predicate. Either argument may be nil; a nil IsBaseline disables
+// baseline detection.
+func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool.Pool) bool) *Migrator {
+	return &Migrator{
+		migrationFiles: migrationFiles,
+		IsBaseline:     isBaseline,
+	}
+}
+
+// runMigrations applies all pending versioned migrations from the Migrator's
+// file source. It acquires a PostgreSQL advisory lock to prevent concurrent
+// replicas from racing. Returns a non-nil error if any migration fails;
+// callers must not start the server in that case.
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) error {
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
 
@@ -32,7 +55,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 		return fmt.Errorf("migrate: open atlas driver: %w", err)
 	}
 
-	dir, err := embedDir(fsys)
+	dir, err := embedDir(migrator.migrationFiles)
 	if err != nil {
 		return fmt.Errorf("migrate: open migration dir: %w", err)
 	}
@@ -47,9 +70,29 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 		return fmt.Errorf("migrate: init revisions table: %w", err)
 	}
 
+	// Ask the caller-supplied predicate whether this run should only set a
+	// baseline (mark the first migration as already applied without executing
+	// its SQL). A nil IsBaseline disables baseline handling entirely.
+	var baselineOpts []migrate.ExecutorOption
+	if migrator.IsBaseline != nil && migrator.IsBaseline(ctx, pool) {
+		files, ferr := dir.Files()
+		if ferr != nil {
+			return fmt.Errorf("migrate: list migration files: %w", ferr)
+		}
+		if len(files) > 0 {
+			baselineVer := files[0].Version()
+			slog.InfoContext(ctx, "atlas migration: setting baseline",
+				"version", baselineVer,
+				"description", files[0].Desc(),
+			)
+			baselineOpts = append(baselineOpts, migrate.WithBaselineVersion(baselineVer))
+		}
+	}
+
 	// WithAllowDirty permits migration on databases that have pre-existing schemas
 	// (e.g. the default "public" schema in a fresh PostgreSQL instance).
-	executor, err := migrate.NewExecutor(driver, dir, rrw, migrate.WithAllowDirty(true))
+	allOpts := append(baselineOpts, migrate.WithAllowDirty(true))
+	executor, err := migrate.NewExecutor(driver, dir, rrw, allOpts...)
 	if err != nil {
 		return fmt.Errorf("migrate: new executor: %w", err)
 	}
@@ -167,6 +210,16 @@ CREATE TABLE IF NOT EXISTS atlas_schema_revisions (
 func (r *pgRevisions) init(ctx context.Context) error {
 	_, err := r.db.ExecContext(ctx, createRevTable)
 	return err
+}
+
+// isEmpty reports whether the revisions table has zero rows.
+func (r *pgRevisions) isEmpty(ctx context.Context) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, "SELECT count(*) FROM atlas_schema_revisions").Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n == 0, nil
 }
 
 func (r *pgRevisions) Ident() *migrate.TableIdent {

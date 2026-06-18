@@ -5,7 +5,7 @@ go 1.26.4
 require (
 	ariga.io/atlas v1.2.2
 	cloud.google.com/go/cloudsqlconn v1.22.0
-	github.com/caarlos0/env/v6 v6.10.1
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 )
@@ -20,7 +20,6 @@ require (
 	github.com/agext/levenshtein v1.2.3 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/bmatcuk/doublestar v1.3.4 // indirect
-	github.com/caarlos0/env/v11 v11.4.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect

@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"os"
@@ -88,7 +87,7 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // should invoke pool.Close() when done with the connection.
 func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 	if strings.Contains(dbURL, "postgres:tc:") {
-		log.Println("'postgres:tc:' detected — provisioning a TestContainer")
+		slog.Info("'postgres:tc:' detected — provisioning a TestContainer")
 
 		left := strings.TrimPrefix(dbURL, "postgres:tc:")
 		imageName := "postgres:17.5"

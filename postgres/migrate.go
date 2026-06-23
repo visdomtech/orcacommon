@@ -73,7 +73,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) 
 	// Ask the caller-supplied predicate whether this run should only set a
 	// baseline (mark the first migration as already applied without executing
 	// its SQL). A nil IsBaseline disables baseline handling entirely.
-	var baselineOpts []migrate.ExecutorOption
+	var allOpts []migrate.ExecutorOption
 	if migrator.IsBaseline != nil && migrator.IsBaseline(ctx, pool) {
 		files, ferr := dir.Files()
 		if ferr != nil {
@@ -85,16 +85,12 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) 
 				"version", baselineVer,
 				"description", files[0].Desc(),
 			)
-			baselineOpts = append(baselineOpts, migrate.WithBaselineVersion(baselineVer))
+			allOpts = append(allOpts, migrate.WithBaselineVersion(baselineVer))
 		}
+	} else {
+		allOpts = append(allOpts, migrate.WithAllowDirty(true))
 	}
 
-	// WithAllowDirty permits migration on databases that have pre-existing schemas
-	// (e.g. the default "public" schema in a fresh PostgreSQL instance).
-	var allOpts []migrate.ExecutorOption
-	if len(baselineOpts) == 0 {
-		allOpts = append(baselineOpts, migrate.WithAllowDirty(true))
-	}
 	executor, err := migrate.NewExecutor(driver, dir, rrw, allOpts...)
 	if err != nil {
 		return fmt.Errorf("migrate: new executor: %w", err)

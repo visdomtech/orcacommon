@@ -91,7 +91,10 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) 
 
 	// WithAllowDirty permits migration on databases that have pre-existing schemas
 	// (e.g. the default "public" schema in a fresh PostgreSQL instance).
-	allOpts := append(baselineOpts, migrate.WithAllowDirty(true))
+	var allOpts []migrate.ExecutorOption
+	if len(baselineOpts) == 0 {
+		allOpts = append(baselineOpts, migrate.WithAllowDirty(true))
+	}
 	executor, err := migrate.NewExecutor(driver, dir, rrw, allOpts...)
 	if err != nil {
 		return fmt.Errorf("migrate: new executor: %w", err)

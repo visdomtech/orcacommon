@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -22,7 +23,7 @@ type DBConfig struct {
 func (d DBConfig) ResolveURL() string {
 	r := strings.NewReplacer(
 		"[username]", d.User,
-		"[password]", d.Password,
+		"[password]", url.QueryEscape(d.Password),
 		"[host]", d.Host,
 		"[port]", strconv.Itoa(d.Port),
 		"[database_name]", d.Name,

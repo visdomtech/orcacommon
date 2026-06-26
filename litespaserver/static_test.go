@@ -1,0 +1,59 @@
+package litespaserver
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+)
+
+func TestStaticRetriever_IsStatic(t *testing.T) {
+	s := newStaticRetriever(nil, []string{"/unsubscribed.html", "/custom.html"})
+
+	for _, p := range []string{"/unsubscribed.html", "/custom.html"} {
+		if !s.isStatic(p) {
+			t.Errorf("isStatic(%q) = false, want true", p)
+		}
+	}
+	if s.isStatic("/not-allowed.html") {
+		t.Error("isStatic(/not-allowed.html) = true, want false")
+	}
+}
+
+func TestStaticRetriever_Retrieve_Caches(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte("static-body"))
+	}))
+	defer srv.Close()
+
+	s := newStaticRetriever(srv.Client(), []string{"/unsubscribed.html"})
+	ctx := context.Background()
+
+	for range 3 {
+		body, err := s.retrieve(ctx, srv.URL, "v1.0.0", "/unsubscribed.html")
+		if err != nil {
+			t.Fatalf("retrieve: %v", err)
+		}
+		if body != "static-body" {
+			t.Errorf("body = %q", body)
+		}
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("CDN hits = %d, want 1 (subsequent calls should be cached)", got)
+	}
+}
+
+func TestStaticRetriever_Retrieve_ErrorNotCached(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	s := newStaticRetriever(srv.Client(), []string{"/unsubscribed.html"})
+	if _, err := s.retrieve(context.Background(), srv.URL, "v1.0.0", "/unsubscribed.html"); err == nil {
+		t.Fatal("expected error on non-2xx response")
+	}
+}

@@ -29,6 +29,11 @@ type Config struct {
 	// When zero-valued, sensible defaults matching the original doublefin SPA
 	// are used.
 	CSP CSPConfig
+
+	// EmbeddedContent, when non-empty, is served directly instead of
+	// fetching from the CDN. The Manager uses a static provider so the
+	// database is never touched. Used for local development.
+	EmbeddedContent string
 }
 
 // CSPConfig parameterises the Content-Security-Policy source allow-lists.

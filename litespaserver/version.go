@@ -92,12 +92,20 @@ type Manager struct {
 // locked to it (static provider) and the DB is not touched; otherwise the
 // defaultVersion is seeded into the DB if absent and a DB-backed provider is
 // used. cdn is the CDN prefix used to validate candidate versions.
-func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaultVersion string) *Manager {
+// When embedded is true, a static provider with version "embedded" is used,
+// bypassing the DB entirely.
+func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaultVersion string, embedded bool) *Manager {
 	d := &dao{pool: pool}
 	m := &Manager{
 		cdn:     cdn,
 		dao:     d,
 		fetcher: newFetcher(nil),
+	}
+
+	if embedded {
+		slog.InfoContext(ctx, "litespaserver: embedded content mode, version locked to 'embedded'")
+		m.provider = &staticProvider{v: "embedded"}
+		return m
 	}
 
 	if cdnVersion != "" {

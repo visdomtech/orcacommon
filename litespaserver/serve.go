@@ -23,13 +23,15 @@ const indexCacheCapacity = 10
 const fallbackBody = "Something unexpected happened - We'll be right back."
 
 // Server serves the CDN-hosted SPA: index.html (with per-request CSP nonce) and
-// an allow-list of static files.
+// an allow-list of static files. When embedded content is configured, it is
+// served directly without CDN fetches.
 type Server struct {
-	cdn     string
-	csp     CSPConfig
-	manager *Manager
-	static  *staticRetriever
-	fetcher *fetcher
+	cdn      string
+	embedded string // non-empty: baked-in HTML served instead of CDN fetch
+	csp      CSPConfig
+	manager  *Manager
+	static   *staticRetriever
+	fetcher  *fetcher
 
 	mu         sync.Mutex
 	indexCache map[string]string
@@ -37,12 +39,14 @@ type Server struct {
 }
 
 // NewServer builds a Server from the provided Config. pool is used for the
-// version manager's DB-backed provider (ignored when cfg.CDNVersion is set).
+// version manager's DB-backed provider (ignored when cfg.CDNVersion or
+// cfg.EmbeddedContent is set).
 func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 	return &Server{
 		cdn:        cfg.CDNPrefix,
+		embedded:   cfg.EmbeddedContent,
 		csp:        cfg.CSP,
-		manager:    NewManager(ctx, pool, cfg.CDNPrefix, cfg.CDNVersion, cfg.DefaultVersion),
+		manager:    NewManager(ctx, pool, cfg.CDNPrefix, cfg.CDNVersion, cfg.DefaultVersion, cfg.EmbeddedContent != ""),
 		static:     newStaticRetriever(nil, cfg.StaticPaths),
 		fetcher:    newFetcher(nil),
 		indexCache: make(map[string]string),
@@ -102,6 +106,12 @@ func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	s.setBaseHeaders(w, nonce)
 	w.Header().Set("X-app-version", version)
+
+	// Embedded mode: serve baked-in HTML, no CDN fetch or cache needed.
+	if s.embedded != "" {
+		_, _ = w.Write([]byte(injectNonce(s.embedded, nonce)))
+		return
+	}
 
 	if cached, ok := s.indexLookup(version); ok {
 		w.Header().Set("X-fe-version-cache", version)

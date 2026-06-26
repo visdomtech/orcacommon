@@ -2,7 +2,6 @@ package litespaserver
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -28,15 +27,14 @@ const fallbackBody = "Something unexpected happened - We'll be right back."
 
 // Server serves the CDN-hosted SPA: index.html (with per-request CSP nonce) and
 // an allow-list of static files. When embedded content is configured, it is
-// served directly from the embed.FS without CDN fetches.
+// served directly from the fs.FS without CDN fetches.
 type Server struct {
-	cdn         string
-	embedded    fs.FS // nil when no embedded content
-	hasEmbedded bool  // true when embedded FS was provided
-	csp         CSPConfig
-	manager     *Manager
-	static      *staticRetriever
-	fetcher     *fetcher
+	cdn      string
+	embedded fs.FS // nil when no embedded content
+	csp      CSPConfig
+	manager  *Manager
+	static   *staticRetriever
+	fetcher  *fetcher
 
 	mu         sync.Mutex
 	indexCache map[string]string
@@ -47,28 +45,32 @@ type Server struct {
 // version manager's DB-backed provider (ignored when cfg.CDNVersion or
 // cfg.EmbeddedContent is set).
 func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
-	hasEmbedded := isEmbeddedSet(cfg.EmbeddedContent)
-	var efs fs.FS
-	if hasEmbedded {
-		efs = cfg.EmbeddedContent
-	}
+	embedded := resolveEmbedded(cfg.EmbeddedContent)
 	return &Server{
-		cdn:         cfg.CDNPrefix,
-		embedded:    efs,
-		hasEmbedded: hasEmbedded,
-		csp:         cfg.CSP,
-		manager:     NewManager(ctx, pool, cfg.CDNPrefix, cfg.CDNVersion, cfg.DefaultVersion, hasEmbedded),
-		static:      newStaticRetriever(nil, cfg.StaticPaths),
-		fetcher:     newFetcher(nil),
-		indexCache:  make(map[string]string),
+		cdn:        cfg.CDNPrefix,
+		embedded:   embedded,
+		csp:        cfg.CSP,
+		manager:    NewManager(ctx, pool, cfg.CDNPrefix, cfg.CDNVersion, cfg.DefaultVersion, embedded != nil),
+		static:     newStaticRetriever(nil, cfg.StaticPaths),
+		fetcher:    newFetcher(nil),
+		indexCache: make(map[string]string),
 	}
 }
 
-// isEmbeddedSet reports whether the embed.FS contains any content by probing
-// for index.html. A zero-value embed.FS (no files embedded) returns false.
-func isEmbeddedSet(f embed.FS) bool {
-	_, err := f.Open("index.html")
-	return err == nil
+// resolveEmbedded validates the caller-supplied fs.FS. Returns nil when no
+// filesystem was provided. Logs a warning when the FS is non-nil but missing
+// index.html at its root (likely a misconfiguration) and returns nil so the
+// server falls back to CDN mode rather than silently breaking.
+func resolveEmbedded(f fs.FS) fs.FS {
+	if f == nil {
+		return nil
+	}
+	if _, err := f.Open("index.html"); err != nil {
+		slog.Warn("litespaserver: EmbeddedContent has no index.html at root; " +
+			"embedded mode disabled. Use fs.Sub to re-root a subdirectory")
+		return nil
+	}
+	return f
 }
 
 // RefreshVersion reloads the live version from the database.
@@ -104,8 +106,8 @@ func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
 
 	// Static files: proxy from CDN with base security headers, no nonce.
 	if s.static.isStatic(path) {
-		// Embedded mode: try serving from embed.FS first.
-		if s.hasEmbedded {
+		// Embedded mode: try serving from fs.FS first.
+		if s.embedded != nil {
 			fsPath := strings.TrimPrefix(path, "/")
 			if data, err := fs.ReadFile(s.embedded, fsPath); err == nil {
 				s.setBaseHeaders(w, "")
@@ -137,8 +139,8 @@ func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
 	s.setBaseHeaders(w, nonce)
 	w.Header().Set("X-app-version", version)
 
-	// Embedded mode: read index.html from embed.FS, no CDN fetch or cache needed.
-	if s.hasEmbedded {
+	// Embedded mode: read index.html from fs.FS, no CDN fetch or cache needed.
+	if s.embedded != nil {
 		data, err := fs.ReadFile(s.embedded, "index.html")
 		if err != nil {
 			slog.ErrorContext(ctx, "litespaserver: read embedded index.html failed", "err", err)

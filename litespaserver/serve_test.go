@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 )
 
 //go:embed testdata/embed
@@ -224,14 +225,13 @@ func newEmbeddedTestServer(f embed.FS) *Server {
 		panic(err)
 	}
 	return &Server{
-		cdn:         "https://cdn.example",
-		embedded:    sub,
-		hasEmbedded: true,
-		csp:         CSPConfig{},
-		manager:     &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
-		static:      newStaticRetriever(nil, []string{"/unsubscribed.html"}),
-		fetcher:     newFetcher(nil),
-		indexCache:  make(map[string]string),
+		cdn:        "https://cdn.example",
+		embedded:   sub,
+		csp:        CSPConfig{},
+		manager:    &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:     newStaticRetriever(nil, []string{"/unsubscribed.html"}),
+		fetcher:    newFetcher(nil),
+		indexCache: make(map[string]string),
 	}
 }
 
@@ -288,6 +288,35 @@ func TestServeRoot_EmbeddedFS_StaticFile(t *testing.T) {
 	}
 }
 
+func TestResolveEmbedded_NilFS(t *testing.T) {
+	got := resolveEmbedded(nil)
+	if got != nil {
+		t.Errorf("resolveEmbedded(nil) = %v, want nil", got)
+	}
+}
+
+func TestResolveEmbedded_ValidFS(t *testing.T) {
+	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resolveEmbedded(sub)
+	if got == nil {
+		t.Error("resolveEmbedded(valid FS) = nil, want non-nil")
+	}
+}
+
+func TestResolveEmbedded_MissingIndexHTML(t *testing.T) {
+	// An FS with files but no index.html — should return nil (and log a warning).
+	badFS := fstest.MapFS{
+		"other.html": &fstest.MapFile{Data: []byte("not index")},
+	}
+	got := resolveEmbedded(badFS)
+	if got != nil {
+		t.Errorf("resolveEmbedded(FS without index.html) = %v, want nil", got)
+	}
+}
+
 func TestServeRoot_EmbeddedFS_StaticFallbackToCDN(t *testing.T) {
 	// embed.FS has index.html but NOT a CDN-only static file.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -301,14 +330,13 @@ func TestServeRoot_EmbeddedFS_StaticFallbackToCDN(t *testing.T) {
 	}
 
 	s := &Server{
-		cdn:         srv.URL,
-		embedded:    sub,
-		hasEmbedded: true,
-		csp:         CSPConfig{},
-		manager:     &Manager{cdn: srv.URL, provider: &staticProvider{v: "embedded"}},
-		static:      newStaticRetriever(srv.Client(), []string{"/cdn-only.html"}),
-		fetcher:     newFetcher(srv.Client()),
-		indexCache:  make(map[string]string),
+		cdn:        srv.URL,
+		embedded:   sub,
+		csp:        CSPConfig{},
+		manager:    &Manager{cdn: srv.URL, provider: &staticProvider{v: "embedded"}},
+		static:     newStaticRetriever(srv.Client(), []string{"/cdn-only.html"}),
+		fetcher:    newFetcher(srv.Client()),
+		indexCache: make(map[string]string),
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/cdn-only.html", nil)

@@ -5,6 +5,8 @@
 // application's configuration package.
 package litespaserver
 
+import "embed"
+
 // Config captures all caller-specific values needed to serve a CDN-hosted SPA.
 // The caller resolves environment-specific defaults (prod vs dev) before
 // constructing Config, keeping the module environment-agnostic.
@@ -30,10 +32,11 @@ type Config struct {
 	// are used.
 	CSP CSPConfig
 
-	// EmbeddedContent, when non-empty, is served directly instead of
-	// fetching from the CDN. The Manager uses a static provider so the
-	// database is never touched. Used for local development.
-	EmbeddedContent string
+	// EmbeddedContent, when set, serves index.html and static files directly
+	// from the embedded filesystem instead of fetching from the CDN. The
+	// Manager uses a static provider so the database is never touched.
+	// Used for local development.
+	EmbeddedContent embed.FS
 }
 
 // CSPConfig parameterises the Content-Security-Policy source allow-lists.

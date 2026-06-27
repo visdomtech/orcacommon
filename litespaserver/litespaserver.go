@@ -49,4 +49,8 @@ type CSPConfig struct {
 	ConnectSrcs  []string
 	StyleSrcs    []string
 	ManifestSrcs []string
+	// Disable disables the default behavior of serving a CSP header
+	Disable bool
+	// DisableAppendNonce disables the default behavior of appending a dynamically generated CSP nonce to style-src
+	DisableAppendNonce bool
 }

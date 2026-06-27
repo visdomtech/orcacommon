@@ -190,7 +190,9 @@ func (s *Server) setBaseHeaders(w http.ResponseWriter, nonce string) {
 	h.Set("X-Frame-Options", "SAMEORIGIN")
 	h.Set("Referrer-Policy", "origin-when-cross-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Security-Policy", cspRule(s.csp, nonce))
+	if !s.csp.Disable && !s.csp.DisableAppendNonce {
+		h.Set("Content-Security-Policy", cspRule(s.csp, nonce))
+	}
 }
 
 func (s *Server) indexLookup(version string) (string, bool) {

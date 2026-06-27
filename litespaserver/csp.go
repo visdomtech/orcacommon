@@ -17,6 +17,14 @@ const (
 	cspDoublefinAll      = "https://*.doublefin.com"
 )
 
+var (
+	ScriptSrcAll   = []string{"*", "'unsafe-inline'", "'unsafe-eval'", "data:", "blob:"}
+	StyleSrcAll    = []string{"*", "'unsafe-inline'", "data:", "blob:"}
+	ConnectSrcAll  = []string{"*", "data:", "blob:"}
+	FontSrcAll     = []string{"*", "data:", "blob:"}
+	ManifestSrcAll = []string{"*", "data:", "blob:"}
+)
+
 // defaultFontSrcs is the fallback font-src allow-list.
 var defaultFontSrcs = []string{cspSelf, cspDoublefinCDN, cspDoublefinCDNDaily}
 

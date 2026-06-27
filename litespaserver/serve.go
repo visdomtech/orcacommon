@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -102,13 +103,13 @@ func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	version := s.manager.Version(ctx)
-	path := r.URL.Path
-
+	reqPath := r.URL.Path
+	ext := path.Ext(reqPath)
 	// Static files: proxy from CDN with base security headers, no nonce.
-	if s.static.isStatic(path) {
+	if ext != "" && s.static.isStatic(reqPath) {
 		// Embedded mode: try serving from fs.FS first.
 		if s.embedded != nil {
-			fsPath := strings.TrimPrefix(path, "/")
+			fsPath := strings.TrimPrefix(reqPath, "/")
 			if data, err := fs.ReadFile(s.embedded, fsPath); err == nil {
 				s.setBaseHeaders(w, "")
 				if ct := mime.TypeByExtension(filepath.Ext(fsPath)); ct != "" {
@@ -118,14 +119,19 @@ func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		body, err := s.static.retrieve(ctx, s.cdn, version, path)
+		body, err := s.static.retrieve(ctx, s.cdn, version, reqPath)
 		if err != nil {
-			slog.WarnContext(ctx, "litespaserver: serve static file failed", "path", path, "err", err)
+			slog.WarnContext(ctx, "litespaserver: serve static file failed", "path", reqPath, "err", err)
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			return
 		}
 		s.setBaseHeaders(w, "")
 		_, _ = w.Write([]byte(body))
+		return
+	}
+	if ext != "" {
+		s.setBaseHeaders(w, "")
+		http.NotFound(w, r)
 		return
 	}
 

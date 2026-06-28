@@ -235,6 +235,24 @@ func newEmbeddedTestServer(f embed.FS) *Server {
 	}
 }
 
+// newEmbeddedTestServerWithPatterns builds a Server backed by an embed.FS and
+// glob-based static paths (e.g. "/assets/*").
+func newEmbeddedTestServerWithPatterns(f embed.FS, patterns []string) *Server {
+	sub, err := fs.Sub(f, "testdata/embed")
+	if err != nil {
+		panic(err)
+	}
+	return &Server{
+		cdn:        "https://cdn.example",
+		embedded:   sub,
+		csp:        CSPConfig{},
+		manager:    &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:     newStaticRetriever(nil, patterns),
+		fetcher:    newFetcher(nil),
+		indexCache: make(map[string]string),
+	}
+}
+
 func TestServeRoot_EmbeddedFS_IndexHTML(t *testing.T) {
 	s := newEmbeddedTestServer(testEmbeddedFS)
 
@@ -263,6 +281,32 @@ func TestServeRoot_EmbeddedFS_IndexHTML(t *testing.T) {
 	csp := rec.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "nonce-") {
 		t.Errorf("CSP header missing nonce: %q", csp)
+	}
+}
+
+func TestServeRoot_EmbeddedFS_StaticFileGlobPattern(t *testing.T) {
+	s := newEmbeddedTestServerWithPatterns(testEmbeddedFS, []string{"/assets/*"})
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+
+	s.ServeRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "test app") {
+		t.Errorf("expected embedded asset content: %q", body)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if !strings.Contains(ct, "javascript") {
+		t.Errorf("Content-Type = %q, want javascript", ct)
+	}
+	// Static responses carry no nonce.
+	if strings.Contains(rec.Header().Get("Content-Security-Policy"), "nonce-") {
+		t.Error("static response should not carry a nonce CSP")
 	}
 }
 

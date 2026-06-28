@@ -21,6 +21,31 @@ func TestStaticRetriever_IsStatic(t *testing.T) {
 	}
 }
 
+func TestStaticRetriever_IsStatic_GlobPattern(t *testing.T) {
+	s := newStaticRetriever(nil, []string{"/assets/*", "/unsubscribed.html"})
+
+	// Exact match still works.
+	if !s.isStatic("/unsubscribed.html") {
+		t.Error("isStatic(/unsubscribed.html) = false, want true")
+	}
+	// Glob matches.
+	for _, p := range []string{"/assets/index.js", "/assets/style.css", "/assets/vendor-abc123.js"} {
+		if !s.isStatic(p) {
+			t.Errorf("isStatic(%q) = false, want true (should match /assets/*)", p)
+		}
+	}
+	// Non-matching paths.
+	for _, p := range []string{"/other/file.js", "/assetsx/foo.js", "/"} {
+		if s.isStatic(p) {
+			t.Errorf("isStatic(%q) = true, want false", p)
+		}
+	}
+	// Glob does not match nested paths (path.Match * does not cross /).
+	if s.isStatic("/assets/sub/deep.js") {
+		t.Error("isStatic(/assets/sub/deep.js) = true, want false (path.Match * does not cross /)")
+	}
+}
+
 func TestStaticRetriever_Retrieve_Caches(t *testing.T) {
 	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

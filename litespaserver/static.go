@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"sync"
 
 	"golang.org/x/sync/singleflight"
@@ -15,38 +16,47 @@ import (
 const staticCacheCapacity = 16
 
 // staticRetriever serves an allow-list of static files from the CDN, caching
-// successful responses in a bounded in-memory map.
+// successful responses in a bounded in-memory map. Paths may be exact matches
+// (e.g. "/unsubscribed.html") or glob patterns (e.g. "/assets/*").
 type staticRetriever struct {
 	client    *http.Client
-	allowed   map[string]struct{}
+	patterns  []string // exact paths or glob patterns (path.Match syntax)
 	mu        sync.Mutex
 	fileCache map[string]string
 	sf        singleflight.Group
 }
 
 // newStaticRetriever builds a retriever whose allow-list is the supplied paths.
+// Each path may be an exact match (e.g. "/unsubscribed.html") or a glob pattern
+// using path.Match syntax (e.g. "/assets/*").
 func newStaticRetriever(client *http.Client, paths []string) *staticRetriever {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	allowed := make(map[string]struct{}, len(paths))
+	var patterns []string
 	for _, p := range paths {
 		if p != "" {
-			allowed[p] = struct{}{}
+			patterns = append(patterns, p)
 		}
 	}
-	slog.Info("litespaserver static files", "paths", keysOf(allowed))
+	slog.Info("litespaserver static files", "patterns", patterns)
 	return &staticRetriever{
 		client:    client,
-		allowed:   allowed,
+		patterns:  patterns,
 		fileCache: make(map[string]string),
 	}
 }
 
-// isStatic reports whether path is in the static-file allow-list.
-func (s *staticRetriever) isStatic(path string) bool {
-	_, ok := s.allowed[path]
-	return ok
+// isStatic reports whether path matches any entry in the static-file allow-list.
+// Entries may be exact paths or glob patterns (path.Match syntax).
+// Malformed patterns (e.g. unterminated brackets) silently fail to match.
+func (s *staticRetriever) isStatic(reqPath string) bool {
+	for _, p := range s.patterns {
+		if matched, _ := path.Match(p, reqPath); matched {
+			return true
+		}
+	}
+	return false
 }
 
 // retrieve fetches {cdn}/{version}{path} from the CDN, caching successful
@@ -105,12 +115,4 @@ func (s *staticRetriever) put(url, body string) {
 		}
 	}
 	s.fileCache[url] = body
-}
-
-func keysOf(m map[string]struct{}) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }

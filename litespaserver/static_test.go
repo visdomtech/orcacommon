@@ -28,7 +28,7 @@ func TestStaticRetriever_IsStatic_GlobPattern(t *testing.T) {
 	if !s.isStatic("/unsubscribed.html") {
 		t.Error("isStatic(/unsubscribed.html) = false, want true")
 	}
-	// Glob matches.
+	// Single-segment glob matches.
 	for _, p := range []string{"/assets/index.js", "/assets/style.css", "/assets/vendor-abc123.js"} {
 		if !s.isStatic(p) {
 			t.Errorf("isStatic(%q) = false, want true (should match /assets/*)", p)
@@ -40,9 +40,32 @@ func TestStaticRetriever_IsStatic_GlobPattern(t *testing.T) {
 			t.Errorf("isStatic(%q) = true, want false", p)
 		}
 	}
-	// Glob does not match nested paths (path.Match * does not cross /).
+	// Single-segment * does not match nested paths.
 	if s.isStatic("/assets/sub/deep.js") {
-		t.Error("isStatic(/assets/sub/deep.js) = true, want false (path.Match * does not cross /)")
+		t.Error("isStatic(/assets/sub/deep.js) = true, want false (* does not cross /)")
+	}
+}
+
+func TestStaticRetriever_IsStatic_DoublestarPattern(t *testing.T) {
+	s := newStaticRetriever(nil, []string{"/assets/**"})
+
+	// Matches single-segment paths.
+	for _, p := range []string{"/assets/index.js", "/assets/style.css"} {
+		if !s.isStatic(p) {
+			t.Errorf("isStatic(%q) = false, want true (should match /assets/**)", p)
+		}
+	}
+	// Matches nested paths (** crosses /).
+	for _, p := range []string{"/assets/sub/deep.js", "/assets/a/b/c.js"} {
+		if !s.isStatic(p) {
+			t.Errorf("isStatic(%q) = false, want true (** should match nested paths)", p)
+		}
+	}
+	// Non-matching paths.
+	for _, p := range []string{"/other/file.js", "/assetsx/foo.js", "/"} {
+		if s.isStatic(p) {
+			t.Errorf("isStatic(%q) = true, want false", p)
+		}
 	}
 }
 

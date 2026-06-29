@@ -21,7 +21,14 @@ var (
 	poolOnce      sync.Once
 	sharedPool    *pgxpool.Pool
 	sharedPoolErr error
+
+	keyedPools    = make(map[string]*pgxpool.Pool)
+	keyedPoolLock sync.RWMutex
 )
+
+func init() {
+	go gracefulShutdown()
+}
 
 // OpenPool returns the process-wide singleton pgxpool connection.
 // The caller supplies the DBConfig (typically from AppConfig.DBConfig).
@@ -29,20 +36,51 @@ var (
 // A SIGTERM/SIGINT handler is registered to gracefully close the pool on shutdown.
 func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
 	poolOnce.Do(func() {
-		if dbcfg.CloudSQLInstance != "" {
-			sharedPool, sharedPoolErr = openCloudSQL(ctx, dbcfg)
-		} else {
-			sharedPool, sharedPoolErr = Connect(ctx, dbcfg.ResolveURL())
-		}
-		if sharedPoolErr != nil {
-			return
-		}
-		if sharedPoolErr = runMigrations(ctx, sharedPool, migrator); sharedPoolErr != nil {
-			return
-		}
-		go gracefulShutdown()
+		sharedPool, sharedPoolErr = createPool(ctx, dbcfg, migrator)
 	})
 	return sharedPool, sharedPoolErr
+}
+
+// OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found, it is created with the given key and save in the pools.
+// the cached pool will be returned directly on the second time it is called with given key.
+func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
+	if key == "" {
+		return OpenPool(ctx, dbcfg, migrator)
+	}
+	keyedPoolLock.RLock()
+	pool, found := keyedPools[key]
+	keyedPoolLock.RUnlock()
+	if found {
+		return pool, nil
+	}
+	keyedPoolLock.Lock()
+	defer keyedPoolLock.Unlock()
+	if pool, found = keyedPools[key]; found {
+		return pool, nil
+	}
+
+	var err error
+	if pool, err = createPool(ctx, dbcfg, migrator); err == nil {
+		keyedPools[key] = pool
+	}
+	return pool, err
+}
+
+func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
+	var pool *pgxpool.Pool
+	var err error
+	if dbcfg.CloudSQLInstance != "" {
+		pool, err = openCloudSQL(ctx, dbcfg)
+	} else {
+		pool, err = Connect(ctx, dbcfg.ResolveURL())
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = runMigrations(ctx, pool, migrator); err != nil {
+		return nil, err
+	}
+	return pool, nil
 }
 
 // gracefulShutdown blocks until SIGTERM or SIGINT is received, then closes
@@ -52,10 +90,18 @@ func gracefulShutdown() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
-	slog.Info("received shutdown signal, closing database pool", "signal", sig)
+	slog.Info("received shutdown signal, closing database pools", "signal", sig)
 	if sharedPool != nil {
+		slog.Info("closing the shared global instance pool")
 		sharedPool.Close()
 	}
+	keyedPoolLock.Lock()
+	defer keyedPoolLock.Unlock()
+	slog.Info("closing the keyed pools", "count", len(keyedPools))
+	for _, pool := range keyedPools {
+		pool.Close()
+	}
+	clear(keyedPools)
 }
 
 func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {

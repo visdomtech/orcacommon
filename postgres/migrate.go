@@ -47,6 +47,10 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 // replicas from racing. Returns a non-nil error if any migration fails;
 // callers must not start the server in that case.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) error {
+	if migrator == nil {
+		return nil
+	}
+
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
 

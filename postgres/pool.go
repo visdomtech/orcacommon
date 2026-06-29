@@ -36,7 +36,7 @@ func init() {
 // A SIGTERM/SIGINT handler is registered to gracefully close the pool on shutdown.
 func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
 	poolOnce.Do(func() {
-		sharedPool, sharedPoolErr = createPool(ctx, dbcfg, migrator)
+		sharedPool, sharedPoolErr = createPool(ctx, dbcfg, migrator, "__shared__")
 	})
 	return sharedPool, sharedPoolErr
 }
@@ -60,13 +60,13 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 	}
 
 	var err error
-	if pool, err = createPool(ctx, dbcfg, migrator); err == nil {
+	if pool, err = createPool(ctx, dbcfg, migrator, key); err == nil {
 		keyedPools[key] = pool
 	}
 	return pool, err
 }
 
-func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
+func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
 	var pool *pgxpool.Pool
 	var err error
 	if dbcfg.CloudSQLInstance != "" {
@@ -77,7 +77,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpo
 	if err != nil {
 		return nil, err
 	}
-	if err = runMigrations(ctx, pool, migrator); err != nil {
+	if err = runMigrations(ctx, pool, migrator, key); err != nil {
 		return nil, err
 	}
 	return pool, nil

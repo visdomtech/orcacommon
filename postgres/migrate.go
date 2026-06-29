@@ -46,7 +46,7 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 // file source. It acquires a PostgreSQL advisory lock to prevent concurrent
 // replicas from racing. Returns a non-nil error if any migration fails;
 // callers must not start the server in that case.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) error {
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string) error {
 	if migrator == nil {
 		return nil
 	}
@@ -59,7 +59,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) 
 		return fmt.Errorf("migrate: open atlas driver: %w", err)
 	}
 
-	dir, err := embedDir(migrator.migrationFiles)
+	dir, err := embedDir(migrator.migrationFiles, key)
 	if err != nil {
 		return fmt.Errorf("migrate: open migration dir: %w", err)
 	}
@@ -135,8 +135,8 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator) 
 }
 
 // embedDir loads the embedded FS into a MemDir so Atlas can read it.
-func embedDir(fsys fs.FS) (migrate.Dir, error) {
-	mem := migrate.OpenMemDir("migrations")
+func embedDir(fsys fs.FS, key string) (migrate.Dir, error) {
+	mem := migrate.OpenMemDir(fmt.Sprintf("migrations_%s", key))
 	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
@@ -149,6 +149,7 @@ func embedDir(fsys fs.FS) (migrate.Dir, error) {
 		if err != nil {
 			return nil, err
 		}
+		slog.Info("write mem sql file", "name", e.Name(), "size", len(data))
 		if err := mem.WriteFile(e.Name(), data); err != nil {
 			return nil, err
 		}

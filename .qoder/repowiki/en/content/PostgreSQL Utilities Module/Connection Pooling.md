@@ -9,28 +9,38 @@
 - [go.mod](file://go.mod)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Added documentation for the new OpenPoolWithKey function and keyed connection pooling support
+- Updated core components section to include keyed pool management
+- Enhanced architecture overview to show both singleton and keyed pool patterns
+- Added new section covering keyed instance connection management
+- Updated graceful shutdown section to handle both shared and keyed pools
+- Added practical examples for keyed pool usage patterns
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
 3. [Core Components](#core-components)
 4. [Architecture Overview](#architecture-overview)
 5. [Detailed Component Analysis](#detailed-component-analysis)
-6. [Dependency Analysis](#dependency-analysis)
-7. [Performance Considerations](#performance-considerations)
-8. [Troubleshooting Guide](#troubleshooting-guide)
-9. [Conclusion](#conclusion)
-10. [Appendices](#appendices)
+6. [Keyed Instance Connection Management](#keyed-instance-connection-management)
+7. [Dependency Analysis](#dependency-analysis)
+8. [Performance Considerations](#performance-considerations)
+9. [Troubleshooting Guide](#troubleshooting-guide)
+10. [Conclusion](#conclusion)
+11. [Appendices](#appendices)
 
 ## Introduction
-This document explains the Connection Pooling component used to manage PostgreSQL connections in the project. It focuses on the OpenPool function, pool initialization, connection configuration, migration integration, graceful shutdown, and operational best practices. It also covers connection lifecycle, health checks, error handling, and guidance for performance tuning and monitoring.
+This document explains the Connection Pooling component used to manage PostgreSQL connections in the project. It focuses on the OpenPool function for singleton pools, the new OpenPoolWithKey function for keyed instance management, pool initialization, connection configuration, migration integration, graceful shutdown, and operational best practices. It also covers connection lifecycle, health checks, error handling, and guidance for performance tuning and monitoring.
 
 ## Project Structure
-The connection pooling logic resides under the postgres package and integrates with a migration subsystem and configuration utilities.
+The connection pooling logic resides under the postgres package and integrates with a migration subsystem and configuration utilities. The system now supports both singleton and keyed connection pooling patterns.
 
 ```mermaid
 graph TB
 subgraph "postgres"
-A["pool.go<br/>OpenPool, Connect, gracefulShutdown, openCloudSQL"]
+A["pool.go<br/>OpenPool, OpenPoolWithKey, createPool, gracefulShutdown"]
 B["dbconfig.go<br/>DBConfig, ResolveURL, LogValue"]
 C["migrate.go<br/>Migrator, runMigrations, pgRevisions"]
 T["pool_test.go<br/>integration tests"]
@@ -43,19 +53,20 @@ T --> C
 ```
 
 **Diagram sources**
-- [pool.go:26-46](file://postgres/pool.go#L26-L46)
+- [pool.go:20-42](file://postgres/pool.go#L20-L42)
 - [dbconfig.go:10-33](file://postgres/dbconfig.go#L10-L33)
 - [migrate.go:23-43](file://postgres/migrate.go#L23-L43)
 - [pool_test.go:148-189](file://postgres/pool_test.go#L148-L189)
 
 **Section sources**
-- [pool.go:1-147](file://postgres/pool.go#L1-L147)
+- [pool.go:1-193](file://postgres/pool.go#L1-L193)
 - [dbconfig.go:1-47](file://postgres/dbconfig.go#L1-L47)
 - [migrate.go:1-321](file://postgres/migrate.go#L1-L321)
 - [pool_test.go:1-193](file://postgres/pool_test.go#L1-L193)
 
 ## Core Components
 - OpenPool: Creates a process-wide singleton connection pool, runs migrations, and registers a graceful shutdown handler.
+- OpenPoolWithKey: Creates or retrieves keyed connection pools for isolated database connections, maintaining backward compatibility.
 - Connect: Establishes a pool from a URL, optionally spinning up a test container for local development.
 - DBConfig: Holds connection parameters and resolves a database URL template.
 - Migrator/runMigrations: Applies schema migrations against the pool with advisory locking and revision tracking.
@@ -63,48 +74,65 @@ T --> C
 
 Key behaviors:
 - Singleton pattern via a once-only initializer ensures a single shared pool per process.
+- Keyed pool pattern uses thread-safe map with RWMutex for concurrent access to multiple isolated pools.
 - Optional Cloud SQL connectivity via a dialer.
 - Migration execution during pool creation with advisory locks to prevent concurrent replicas from racing.
-- Graceful shutdown on SIGTERM/SIGINT.
+- Graceful shutdown on SIGTERM/SIGINT for both shared and keyed pools.
+
+**Updated** Added OpenPoolWithKey function for multi-instance connection management with unique keys
 
 **Section sources**
-- [pool.go:26-46](file://postgres/pool.go#L26-L46)
-- [pool.go:84-146](file://postgres/pool.go#L84-L146)
+- [pool.go:33-42](file://postgres/pool.go#L33-L42)
+- [pool.go:44-67](file://postgres/pool.go#L44-L67)
+- [pool.go:20-27](file://postgres/pool.go#L20-L27)
+- [pool.go:86-105](file://postgres/pool.go#L86-L105)
 - [dbconfig.go:10-33](file://postgres/dbconfig.go#L10-L33)
 - [migrate.go:23-131](file://postgres/migrate.go#L23-L131)
 - [migrate.go:181-314](file://postgres/migrate.go#L181-L314)
 
 ## Architecture Overview
-The connection pool is initialized once and reused across the application. On initialization, the system either connects directly to a database or to Cloud SQL, runs migrations, and starts a goroutine to handle OS signals for graceful shutdown.
+The connection pool system now supports both singleton and keyed connection patterns. The singleton pool serves traditional applications, while keyed pools enable isolated connections for multi-tenant scenarios, separate environments, or different database contexts.
 
 ```mermaid
 sequenceDiagram
 participant App as "Application"
-participant Pool as "OpenPool"
-participant Conn as "Connect"
-participant Cloud as "openCloudSQL"
+participant Shared as "OpenPool"
+participant Keyed as "OpenPoolWithKey"
+participant Create as "createPool"
+participant Conn as "Connect/openCloudSQL"
 participant Mig as "runMigrations"
 participant Sig as "gracefulShutdown"
-App->>Pool : "OpenPool(ctx, DBConfig, Migrator)"
-Pool->>Pool : "poolOnce.Do(...)"
-alt "CloudSQL configured"
-Pool->>Cloud : "openCloudSQL(ctx, dbcfg)"
-Cloud-->>Pool : "*pgxpool.Pool"
-else "Direct connection"
-Pool->>Conn : "Connect(ctx, dbcfg.ResolveURL())"
-Conn-->>Pool : "*pgxpool.Pool"
+App->>Shared : "OpenPool(ctx, DBConfig, Migrator)"
+Shared->>Shared : "poolOnce.Do(...)"
+Shared->>Create : "createPool(ctx, dbcfg, migrator, __shared__)"
+Create->>Conn : "Connect or openCloudSQL"
+Conn-->>Create : "*pgxpool.Pool"
+Create->>Mig : "runMigrations(ctx, pool, migrator, key)"
+Mig-->>Create : "ok or error"
+Create-->>Shared : "*pgxpool.Pool"
+Shared-->>App : "*pgxpool.Pool"
+App->>Keyed : "OpenPoolWithKey(ctx, DBConfig, Migrator, key)"
+Keyed->>Keyed : "Check keyedPools[key]"
+alt "Pool exists"
+Keyed-->>App : "Return existing pool"
+else "Pool not found"
+Keyed->>Create : "createPool(ctx, dbcfg, migrator, key)"
+Create->>Mig : "runMigrations(ctx, pool, migrator, key)"
+Mig-->>Create : "ok or error"
+Create-->>Keyed : "*pgxpool.Pool"
+Keyed->>Keyed : "Store in keyedPools map"
+Keyed-->>App : "*pgxpool.Pool"
 end
-Pool->>Mig : "runMigrations(ctx, pool, migrator)"
-Mig-->>Pool : "ok or error"
-Pool->>Sig : "go gracefulShutdown()"
-Pool-->>App : "*pgxpool.Pool"
+Sig->>Sig : "goroutine handles SIGTERM/SIGINT"
+Sig->>Sig : "Close sharedPool if exists"
+Sig->>Sig : "Iterate keyedPools and close all"
 ```
 
 **Diagram sources**
-- [pool.go:30-45](file://postgres/pool.go#L30-L45)
-- [pool.go:61-82](file://postgres/pool.go#L61-L82)
-- [pool.go:88-146](file://postgres/pool.go#L88-L146)
-- [migrate.go:49-131](file://postgres/migrate.go#L49-L131)
+- [pool.go:37-41](file://postgres/pool.go#L37-L41)
+- [pool.go:46-67](file://postgres/pool.go#L46-L67)
+- [pool.go:69-84](file://postgres/pool.go#L69-L84)
+- [pool.go:89-105](file://postgres/pool.go#L89-L105)
 
 ## Detailed Component Analysis
 
@@ -125,8 +153,48 @@ Operational notes:
 - Migration failure prevents pool return.
 
 **Section sources**
-- [pool.go:26-46](file://postgres/pool.go#L26-L46)
-- [pool.go:30-45](file://postgres/pool.go#L30-L45)
+- [pool.go:33-42](file://postgres/pool.go#L33-L42)
+- [pool.go:37-41](file://postgres/pool.go#L37-L41)
+
+### OpenPoolWithKey Function
+Purpose:
+- Manages multiple isolated connection pools using unique keys.
+- Maintains backward compatibility with OpenPool.
+- Provides thread-safe access to keyed pools.
+
+Behavior highlights:
+- Returns shared pool when key is empty (backward compatibility).
+- Uses read-lock first for fast path lookup.
+- Implements double-checked locking pattern for thread safety.
+- Creates new pools on demand and caches them for reuse.
+- Each keyed pool maintains its own migration state.
+
+Keyed pool management:
+- Thread-safe map with RWMutex for concurrent access.
+- Double-checked locking prevents race conditions.
+- Pools are stored with their unique keys as identifiers.
+- Memory management ensures proper cleanup during shutdown.
+
+**New** Added comprehensive keyed instance connection management support
+
+**Section sources**
+- [pool.go:44-67](file://postgres/pool.go#L44-L67)
+- [pool.go:20-27](file://postgres/pool.go#L20-L27)
+
+### createPool Function
+Purpose:
+- Internal helper that creates pools for both singleton and keyed instances.
+- Handles Cloud SQL and direct connection paths.
+- Executes migrations with key-aware advisory locking.
+
+Behavior highlights:
+- Orchestrates the complete pool creation process.
+- Supports both Cloud SQL dialer and direct Postgres URLs.
+- Runs migrations with proper error handling.
+- Returns fully initialized pools ready for use.
+
+**Section sources**
+- [pool.go:69-84](file://postgres/pool.go#L69-L84)
 
 ### Connect Function
 Purpose:
@@ -143,7 +211,7 @@ Health checks:
 - After Close, Ping fails as expected.
 
 **Section sources**
-- [pool.go:84-146](file://postgres/pool.go#L84-L146)
+- [pool.go:130-192](file://postgres/pool.go#L130-L192)
 - [pool_test.go:74-88](file://postgres/pool_test.go#L74-L88)
 - [pool_test.go:90-116](file://postgres/pool_test.go#L90-L116)
 - [pool_test.go:118-136](file://postgres/pool_test.go#L118-L136)
@@ -183,14 +251,19 @@ Behavior highlights:
 
 ### Graceful Shutdown
 Purpose:
-- Listens for SIGTERM/SIGINT and closes the shared pool.
+- Listens for SIGTERM/SIGINT and closes both shared and keyed pools.
 
 Behavior highlights:
 - Starts as a goroutine from OpenPool.
-- Logs receipt of the signal and closes the pool.
+- Closes the shared singleton pool if it exists.
+- Iterates through all keyed pools and closes them.
+- Clears the keyed pools map to prevent memory leaks.
+- Logs receipt of the signal and closure actions.
+
+**Updated** Enhanced to handle both shared and keyed pool cleanup
 
 **Section sources**
-- [pool.go:48-59](file://postgres/pool.go#L48-L59)
+- [pool.go:86-105](file://postgres/pool.go#L86-L105)
 
 ### Cloud SQL Connection Path
 Purpose:
@@ -202,31 +275,68 @@ Behavior highlights:
 - Builds a pool with the configured dialer.
 
 **Section sources**
-- [pool.go:61-82](file://postgres/pool.go#L61-L82)
+- [pool.go:107-128](file://postgres/pool.go#L107-L128)
 
 ### Connection Lifecycle Management
 Lifecycle stages:
-- Creation: OpenPool initializes the pool and runs migrations.
-- Usage: Application retrieves the singleton pool and executes queries.
+- Creation: OpenPool initializes the singleton pool and OpenPoolWithKey manages keyed pools.
+- Usage: Application retrieves pools (singleton or keyed) and executes queries.
 - Health: Ping is used in tests to validate liveness.
-- Shutdown: SIGTERM/SIGINT triggers gracefulClose; application should also call Close when appropriate.
+- Shutdown: SIGTERM/SIGINT triggers gracefulClose for both pool types; application should also call Close when appropriate.
 
 ```mermaid
 flowchart TD
-Start(["OpenPool called"]) --> Init["Initialize pool (CloudSQL or direct)"]
-Init --> Migrate["Run migrations with advisory lock"]
-Migrate --> Running["Pool ready for use"]
+Start(["Pool Initialization"]) --> CheckType{"Pool Type?"}
+CheckType --> |Singleton| InitShared["Initialize shared pool (__shared__)"]
+CheckType --> |Keyed| InitKeyed["Initialize keyed pool (with key)"]
+InitShared --> MigrateShared["Run migrations with advisory lock (__shared__)"]
+InitKeyed --> MigrateKeyed["Run migrations with advisory lock (key)"]
+MigrateShared --> Running["Pool ready for use"]
+MigrateKeyed --> Running
 Running --> Signal["Receive SIGTERM/SIGINT"]
-Signal --> GraceClose["Close pool gracefully"]
-Running --> ManualClose["Manual Close() called"]
-ManualClose --> End(["Pool closed"])
-GraceClose --> End
+Signal --> CloseShared["Close shared pool if exists"]
+Signal --> CloseKeyed["Iterate keyed pools and close all"]
+CloseShared --> Cleanup["Clear keyed pools map"]
+CloseKeyed --> Cleanup
+Cleanup --> End(["All pools closed"])
 ```
 
 **Diagram sources**
-- [pool.go:30-45](file://postgres/pool.go#L30-L45)
-- [migrate.go:49-131](file://postgres/migrate.go#L49-L131)
-- [pool.go:48-59](file://postgres/pool.go#L48-L59)
+- [pool.go:37-41](file://postgres/pool.go#L37-L41)
+- [pool.go:46-67](file://postgres/pool.go#L46-L67)
+- [pool.go:89-105](file://postgres/pool.go#L89-L105)
+
+## Keyed Instance Connection Management
+
+### Overview
+The keyed connection pooling feature enables multiple isolated database connections within the same process, each identified by a unique key. This pattern is useful for multi-tenant applications, separate environments (development/staging/production), or different database contexts.
+
+### Implementation Details
+- Thread-safe pool storage using `map[string]*pgxpool.Pool` with `sync.RWMutex`
+- Double-checked locking pattern for efficient concurrent access
+- Automatic pool creation and caching for new keys
+- Individual migration state management per keyed pool
+- Backward compatibility with empty key values
+
+### Usage Patterns
+- **Multi-tenant isolation**: Use tenant ID as key for completely isolated connections
+- **Environment separation**: Use environment names as keys for dev/stage/prod isolation
+- **Database context switching**: Use logical context names as keys for different database schemas
+- **Testing scenarios**: Use test names or IDs as keys for isolated test databases
+
+### Thread Safety
+The keyed pool system implements robust thread safety:
+- Read locks for fast path lookups
+- Write locks only when creating new pools
+- Double-checked locking prevents race conditions
+- Proper synchronization around pool creation and storage
+
+**New** Comprehensive documentation for the new keyed instance connection management feature
+
+**Section sources**
+- [pool.go:20-27](file://postgres/pool.go#L20-L27)
+- [pool.go:44-67](file://postgres/pool.go#L44-L67)
+- [pool.go:89-105](file://postgres/pool.go#L89-L105)
 
 ## Dependency Analysis
 External libraries used:
@@ -257,32 +367,40 @@ M --> PGX
 ## Performance Considerations
 - Pool sizing: The implementation delegates pool configuration to pgxpool. Tune pool parameters (e.g., max idle and max open connections, lifetime, and idle timeouts) by adjusting the underlying pool configuration. Since the code constructs the pool directly, consider passing a pre-configured pool configuration to align with workload characteristics.
 - Connection reuse: Reuse the singleton pool across the application to minimize overhead.
+- Keyed pool optimization: For keyed pools, consider pool size limits per key based on expected concurrency patterns.
+- Thread safety overhead: The keyed pool system adds minimal overhead through RWMutex operations.
+- Memory management: Monitor keyed pool growth and implement cleanup strategies for dynamic key generation scenarios.
 - Health checks: Use Ping to verify liveness before heavy operations.
-- Monitoring: Expose pool stats via pgxpool’s built-in metrics and integrate with your metrics stack.
+- Monitoring: Expose pool stats via pgxpool's built-in metrics and integrate with your metrics stack.
 - Concurrency: Ensure application-level concurrency respects pool limits to avoid saturation.
 - Network: For Cloud SQL, ensure the dialer is configured appropriately and consider latency and retry policies.
 
-[No sources needed since this section provides general guidance]
+**Updated** Added considerations for keyed pool performance and memory management
 
 ## Troubleshooting Guide
 Common issues and strategies:
 - Migration failures: Failures during runMigrations will prevent pool return. Review migration logs and fix issues before restarting.
 - Advisory lock contention: If migrations stall, check for long-held locks or conflicting replicas.
 - Test container connectivity: When using the test container URL prefix, ensure Docker is available and the container is reachable.
-- Graceful shutdown: Verify that SIGTERM/SIGINT is received and that the pool is closed. Confirm logs indicate the shutdown signal was processed.
+- Graceful shutdown: Verify that SIGTERM/SIGINT is received and that both shared and keyed pools are closed. Confirm logs indicate the shutdown signal was processed.
 - Health checks: Use Ping to detect connection problems early.
+- Keyed pool issues: Monitor keyed pools map for memory leaks and ensure proper cleanup when keys are no longer needed.
+- Thread safety concerns: Verify that concurrent access patterns don't cause race conditions with the keyed pool system.
+- Key selection strategy: Choose meaningful keys that won't cause pool explosion in dynamic environments.
+
+**Updated** Added troubleshooting guidance for keyed pool scenarios
 
 **Section sources**
 - [migrate.go:49-131](file://postgres/migrate.go#L49-L131)
 - [migrate.go:155-179](file://postgres/migrate.go#L155-L179)
 - [pool_test.go:74-88](file://postgres/pool_test.go#L74-L88)
 - [pool_test.go:118-136](file://postgres/pool_test.go#L118-L136)
-- [pool.go:48-59](file://postgres/pool.go#L48-L59)
+- [pool.go:86-105](file://postgres/pool.go#L86-L105)
 
 ## Conclusion
-The connection pooling component provides a robust, singleton pool with integrated migrations and graceful shutdown. It supports both direct Postgres and Cloud SQL connections, offers test-friendly container provisioning, and ensures safe lifecycle management. Adopt the recommended practices for sizing, reuse, and monitoring to achieve reliable and efficient database connectivity.
+The connection pooling component provides a robust, flexible system with both singleton and keyed connection pooling patterns. The enhanced implementation supports multi-instance connection management while maintaining backward compatibility, offering integrated migrations and graceful shutdown for both shared and isolated pools. It supports both direct Postgres and Cloud SQL connections, offers test-friendly container provisioning, and ensures safe lifecycle management across different deployment scenarios. Adopt the recommended practices for sizing, reuse, and monitoring to achieve reliable and efficient database connectivity in various architectural patterns.
 
-[No sources needed since this section summarizes without analyzing specific files]
+**Updated** Enhanced conclusion to reflect the new keyed instance capabilities
 
 ## Appendices
 
@@ -291,11 +409,13 @@ The connection pooling component provides a robust, singleton pool with integrat
 - Pool configuration and usage
   - Construct DBConfig from environment variables and resolve the URL.
   - Call OpenPool to initialize the singleton pool and run migrations.
+  - Use OpenPoolWithKey for keyed pools when isolation is required.
   - Use the returned pool for all database operations.
   - Close the pool on application shutdown or when done with tests.
 
 - Connection usage patterns
   - Retrieve the singleton pool once and reuse it across components.
+  - For multi-tenant scenarios, use unique keys per tenant with OpenPoolWithKey.
   - Perform health checks using Ping before critical operations.
   - Ensure Close is called to release resources.
 
@@ -303,19 +423,31 @@ The connection pooling component provides a robust, singleton pool with integrat
   - Initialize the pool at application startup.
   - Register graceful shutdown to close the pool on SIGTERM/SIGINT.
   - For tests, use the test container URL prefix and close the pool afterward.
+  - Implement proper keyed pool cleanup when keys are no longer needed.
+
+- Keyed pool usage examples
+  - Multi-tenant applications: `OpenPoolWithKey(ctx, dbcfg, migrator, tenantID)`
+  - Environment separation: `OpenPoolWithKey(ctx, dbcfg, migrator, envName)`
+  - Database context switching: `OpenPoolWithKey(ctx, dbcfg, migrator, contextName)`
+
+**Updated** Added practical examples for keyed pool usage patterns
 
 **Section sources**
 - [dbconfig.go:10-33](file://postgres/dbconfig.go#L10-L33)
-- [pool.go:26-46](file://postgres/pool.go#L26-L46)
-- [pool.go:84-146](file://postgres/pool.go#L84-L146)
+- [pool.go:33-42](file://postgres/pool.go#L33-L42)
+- [pool.go:44-67](file://postgres/pool.go#L44-L67)
 - [pool_test.go:74-88](file://postgres/pool_test.go#L74-L88)
 - [pool_test.go:118-136](file://postgres/pool_test.go#L118-L136)
 
 ### Best Practices
 - Pool sizing: Align pool limits with expected concurrency and database capacity.
 - Connection reuse: Prefer the singleton pool to reduce connection churn.
+- Keyed pool management: Implement proper key naming strategies to avoid pool explosion.
 - Failure handling: Wrap operations with retries and circuit-breaking where appropriate.
 - Monitoring: Track pool utilization, wait times, and migration execution metrics.
 - Security: Avoid logging sensitive configuration; DBConfig redacts passwords in logs.
+- Memory management: Monitor keyed pool growth and implement cleanup strategies.
+- Thread safety: Leverage the built-in thread safety of the keyed pool system.
+- Graceful shutdown: Ensure proper cleanup of both shared and keyed pools during shutdown.
 
-[No sources needed since this section provides general guidance]
+**Updated** Added best practices for keyed pool management and thread safety

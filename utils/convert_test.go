@@ -201,13 +201,22 @@ func TestStructToMapLC_EmbeddedStruct(t *testing.T) {
 
 func TestStructToMapLC_WithIDSuffix(t *testing.T) {
 	type TestStruct struct {
-		UserID   string
-		OrderID  int
-		Name     string
-		SimpleID string
+		UserID              string
+		OrderID             int
+		Name                string
+		SimpleID            string
+		LongRunningToolIDs  []string
+		ItemIDs             []int
 	}
 
-	s := TestStruct{UserID: "u1", OrderID: 42, Name: "test", SimpleID: "s1"}
+	s := TestStruct{
+		UserID:             "u1",
+		OrderID:            42,
+		Name:               "test",
+		SimpleID:           "s1",
+		LongRunningToolIDs: []string{"t1", "t2"},
+		ItemIDs:            []int{1, 2, 3},
+	}
 	result := StructToMapLC(s, WithIDSuffix())
 
 	if _, exists := result["userID"]; exists {
@@ -224,6 +233,18 @@ func TestStructToMapLC_WithIDSuffix(t *testing.T) {
 	}
 	if result["simpleId"] != "s1" {
 		t.Errorf("Expected simpleId='s1', got %v", result["simpleId"])
+	}
+	// plural IDs
+	if _, exists := result["longRunningToolIDs"]; exists {
+		t.Errorf("Expected longRunningToolIDs to be converted to longRunningToolIds")
+	}
+	ids, ok := result["longRunningToolIds"].([]any)
+	if !ok || len(ids) != 2 {
+		t.Errorf("Expected longRunningToolIds=[t1,t2], got %v", result["longRunningToolIds"])
+	}
+	itemIds, ok := result["itemIds"].([]any)
+	if !ok || len(itemIds) != 3 {
+		t.Errorf("Expected itemIds with 3 elements, got %v", result["itemIds"])
 	}
 }
 
@@ -367,6 +388,142 @@ func TestStructToMapLC_NoOptions_BackwardCompat(t *testing.T) {
 	}
 }
 
+func TestStructToMapLC_WithNilMapToEmpty(t *testing.T) {
+	type TestStruct struct {
+		Name   string
+		Labels map[string]string
+		Tags   map[string]any
+	}
+
+	// nil maps without option -> null
+	s := TestStruct{Name: "test", Labels: nil, Tags: nil}
+	result := StructToMapLC(s)
+	if result["labels"] != nil {
+		t.Errorf("Expected nil labels without option, got %v", result["labels"])
+	}
+
+	// nil maps with option -> {}
+	result = StructToMapLC(s, WithNilMapToEmpty())
+	labels, ok := result["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected labels to be map, got %T", result["labels"])
+	}
+	if len(labels) != 0 {
+		t.Errorf("Expected empty map, got %v", labels)
+	}
+	tags, ok := result["tags"].(map[string]any)
+	if !ok || len(tags) != 0 {
+		t.Errorf("Expected tags to be empty map, got %v", result["tags"])
+	}
+
+	// non-nil maps should be unaffected
+	s2 := TestStruct{Name: "test2", Labels: map[string]string{"env": "prod"}}
+	result2 := StructToMapLC(s2, WithNilMapToEmpty())
+	labels2, ok := result2["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected labels to be map, got %T", result2["labels"])
+	}
+	if labels2["env"] != "prod" {
+		t.Errorf("Expected env='prod', got %v", labels2["env"])
+	}
+}
+
+func TestStructToMapLC_WithNilSliceToEmpty(t *testing.T) {
+	type TestStruct struct {
+		Name  string
+		Items []string
+		Tags  []int
+	}
+
+	// nil slices without option -> null
+	s := TestStruct{Name: "test"}
+	result := StructToMapLC(s)
+	if result["items"] != nil {
+		t.Errorf("Expected nil items without option, got %v", result["items"])
+	}
+
+	// nil slices with option -> []
+	result = StructToMapLC(s, WithNilSliceToEmpty())
+	items, ok := result["items"].([]any)
+	if !ok {
+		t.Fatalf("Expected items to be slice, got %T", result["items"])
+	}
+	if len(items) != 0 {
+		t.Errorf("Expected empty slice, got %v", items)
+	}
+	tags, ok := result["tags"].([]any)
+	if !ok || len(tags) != 0 {
+		t.Errorf("Expected tags to be empty slice, got %v", result["tags"])
+	}
+
+	// non-nil slices should be unaffected
+	s2 := TestStruct{Name: "test2", Items: []string{"a", "b"}}
+	result2 := StructToMapLC(s2, WithNilSliceToEmpty())
+	items2, ok := result2["items"].([]any)
+	if !ok || len(items2) != 2 {
+		t.Errorf("Expected items with 2 elements, got %v", result2["items"])
+	}
+}
+
+func TestStructToMapLC_AllOptionsCombined(t *testing.T) {
+	type Base struct {
+		BaseID string
+	}
+	type TestStruct struct {
+		Base
+		UserName  string
+		AccountID string
+		ToolIDs   []string
+		Labels    map[string]string
+		Items     []int
+		Age       int
+	}
+
+	s := TestStruct{
+		Base:      Base{BaseID: "b1"},
+		UserName:  "",
+		AccountID: "a1",
+		ToolIDs:   nil,
+		Labels:    nil,
+		Items:     nil,
+		Age:       0,
+	}
+
+	result := StructToMapLC(s,
+		WithIDSuffix(),
+		WithOmitEmpty(),
+		WithNilMapToEmpty(),
+		WithNilSliceToEmpty(),
+	)
+
+	// ID suffix
+	if result["baseId"] != "b1" {
+		t.Errorf("Expected baseId='b1', got %v", result["baseId"])
+	}
+	if result["accountId"] != "a1" {
+		t.Errorf("Expected accountId='a1', got %v", result["accountId"])
+	}
+	// omitEmpty: empty string omitted
+	if _, exists := result["userName"]; exists {
+		t.Errorf("Expected empty userName to be omitted")
+	}
+	// zero int present
+	if _, exists := result["age"]; !exists {
+		t.Errorf("Expected zero age to be present")
+	}
+	// nil slice with WithNilSliceToEmpty -> [] (not omitted, because WithNilSliceToEmpty applies after omitEmpty check)
+	// Actually: WithOmitEmpty omits nil slices. So items and toolIDs are omitted before value conversion.
+	// The omitEmpty check skips nil slices entirely, so WithNilSliceToEmpty doesn't apply.
+	if _, exists := result["items"]; exists {
+		t.Errorf("Expected nil items to be omitted by WithOmitEmpty")
+	}
+	// nil map with WithNilMapToEmpty -> {}
+	labels, ok := result["labels"].(map[string]any)
+	if !ok || len(labels) != 0 {
+		t.Errorf("Expected labels to be empty map, got %v", result["labels"])
+	}
+}
+
 func TestToCamelCase(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -399,6 +556,10 @@ func TestConvertIDSuffix(t *testing.T) {
 		{"name", "name"},
 		{"", ""},
 		{"orderID", "orderId"},
+		{"longRunningToolIDs", "longRunningToolIds"},
+		{"itemIDs", "itemIds"},
+		{"iDs", "ids"},
+		{"IDs", "Ids"},
 	}
 
 	for _, tt := range tests {

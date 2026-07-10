@@ -52,8 +52,10 @@ func PrettyJSON(v any) json.RawMessage {
 type Option func(*options)
 
 type options struct {
-	idSuffix  bool // convert "ID" suffix to "Id"
-	omitEmpty bool // omit empty string, nil pointer, nil/empty slice
+	idSuffix         bool // convert "ID" suffix to "Id"
+	omitEmpty        bool // omit empty string, nil pointer, nil/empty slice
+	nilMapToEmpty    bool // nil map -> empty map {} instead of null
+	nilSliceToEmpty  bool // nil slice -> empty slice [] instead of null
 }
 
 // WithIDSuffix converts field names ending in "ID" to end in "Id".
@@ -69,6 +71,20 @@ func WithIDSuffix() Option {
 func WithOmitEmpty() Option {
 	return func(o *options) {
 		o.omitEmpty = true
+	}
+}
+
+// WithNilMapToEmpty converts nil map fields to empty maps {} instead of null.
+func WithNilMapToEmpty() Option {
+	return func(o *options) {
+		o.nilMapToEmpty = true
+	}
+}
+
+// WithNilSliceToEmpty converts nil slice fields to empty slices [] instead of null.
+func WithNilSliceToEmpty() Option {
+	return func(o *options) {
+		o.nilSliceToEmpty = true
 	}
 }
 
@@ -141,9 +157,16 @@ func structToMap(v any, o *options) map[string]any {
 	return result
 }
 
-// convertIDSuffix replaces a trailing "ID" with "Id".
-// e.g. "userID" -> "userId", "iD" (from field "ID") -> "id".
+// convertIDSuffix replaces a trailing "IDs" with "Ids" or "ID" with "Id".
+// e.g. "longRunningToolIDs" -> "longRunningToolIds",
+// "userID" -> "userId", "iD" (from field "ID") -> "id".
 func convertIDSuffix(s string) string {
+	if s == "iDs" {
+		return "ids"
+	}
+	if strings.HasSuffix(s, "IDs") {
+		return s[:len(s)-3] + "Ids"
+	}
 	if s == "iD" {
 		return "id"
 	}
@@ -190,9 +213,29 @@ func convertValue(v reflect.Value, o *options) any {
 		return structToMap(v.Interface(), o)
 	}
 
+	// Handle maps
+	if v.Kind() == reflect.Map {
+		if v.IsNil() {
+			if o.nilMapToEmpty {
+				return map[string]any{}
+			}
+			return nil
+		}
+		result := make(map[string]any, v.Len())
+		for _, key := range v.MapKeys() {
+			if key.Kind() == reflect.String {
+				result[key.String()] = convertValue(v.MapIndex(key), o)
+			}
+		}
+		return result
+	}
+
 	// Handle slices
 	if v.Kind() == reflect.Slice {
 		if v.IsNil() {
+			if o.nilSliceToEmpty {
+				return []any{}
+			}
 			return nil
 		}
 		result := make([]any, v.Len())

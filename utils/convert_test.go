@@ -167,6 +167,206 @@ func TestStructToMapLC_FieldPointer(t *testing.T) {
 	}
 }
 
+func TestStructToMapLC_EmbeddedStruct(t *testing.T) {
+	type Base struct {
+		BaseName string
+		BaseAge  int
+	}
+	type Extended struct {
+		Base
+		Extra string
+	}
+
+	s := Extended{
+		Base:  Base{BaseName: "base", BaseAge: 10},
+		Extra: "extra",
+	}
+
+	result := StructToMapLC(s)
+
+	if result["baseName"] != "base" {
+		t.Errorf("Expected baseName='base', got %v", result["baseName"])
+	}
+	if result["baseAge"] != 10 {
+		t.Errorf("Expected baseAge=10, got %v", result["baseAge"])
+	}
+	if result["extra"] != "extra" {
+		t.Errorf("Expected extra='extra', got %v", result["extra"])
+	}
+	// embedded struct should NOT appear as a nested key
+	if _, exists := result["base"]; exists {
+		t.Errorf("Embedded struct 'base' should be flattened, not nested")
+	}
+}
+
+func TestStructToMapLC_WithIDSuffix(t *testing.T) {
+	type TestStruct struct {
+		UserID   string
+		OrderID  int
+		Name     string
+		SimpleID string
+	}
+
+	s := TestStruct{UserID: "u1", OrderID: 42, Name: "test", SimpleID: "s1"}
+	result := StructToMapLC(s, WithIDSuffix())
+
+	if _, exists := result["userID"]; exists {
+		t.Errorf("Expected userID to be converted to userId")
+	}
+	if result["userId"] != "u1" {
+		t.Errorf("Expected userId='u1', got %v", result["userId"])
+	}
+	if result["orderId"] != 42 {
+		t.Errorf("Expected orderId=42, got %v", result["orderId"])
+	}
+	if result["name"] != "test" {
+		t.Errorf("Expected name='test', got %v", result["name"])
+	}
+	if result["simpleId"] != "s1" {
+		t.Errorf("Expected simpleId='s1', got %v", result["simpleId"])
+	}
+}
+
+func TestStructToMapLC_WithOmitEmpty(t *testing.T) {
+	type TestStruct struct {
+		Name   string
+		Age    int
+		Active bool
+		Tag    *string
+		Items  []string
+		Score  float64
+	}
+
+	s := TestStruct{
+		Name:   "",
+		Age:    0,
+		Active: false,
+		Tag:    nil,
+		Items:  nil,
+		Score:  0.0,
+	}
+	result := StructToMapLC(s, WithOmitEmpty())
+
+	// empty string should be omitted
+	if _, exists := result["name"]; exists {
+		t.Errorf("Expected empty string 'name' to be omitted")
+	}
+	// nil pointer should be omitted
+	if _, exists := result["tag"]; exists {
+		t.Errorf("Expected nil pointer 'tag' to be omitted")
+	}
+	// nil slice should be omitted
+	if _, exists := result["items"]; exists {
+		t.Errorf("Expected nil slice 'items' to be omitted")
+	}
+	// int zero should NOT be omitted (numbers are never omitted)
+	if _, exists := result["age"]; !exists {
+		t.Errorf("Expected zero int 'age' to be present (numbers not omitted)")
+	}
+	// bool false should NOT be omitted
+	if _, exists := result["active"]; !exists {
+		t.Errorf("Expected false bool 'active' to be present (booleans not omitted)")
+	}
+	// float zero should NOT be omitted
+	if _, exists := result["score"]; !exists {
+		t.Errorf("Expected zero float 'score' to be present (numbers not omitted)")
+	}
+}
+
+func TestStructToMapLC_WithOmitEmpty_EmptySlice(t *testing.T) {
+	type TestStruct struct {
+		Tags []string
+	}
+	s := TestStruct{Tags: []string{}}
+	result := StructToMapLC(s, WithOmitEmpty())
+
+	if _, exists := result["tags"]; exists {
+		t.Errorf("Expected empty slice 'tags' to be omitted")
+	}
+}
+
+func TestStructToMapLC_WithOmitEmpty_NonEmptyValues(t *testing.T) {
+	type TestStruct struct {
+		Name  string
+		Tag   *string
+		Items []int
+	}
+	tag := "go"
+	s := TestStruct{
+		Name:  "hello",
+		Tag:   &tag,
+		Items: []int{1, 2},
+	}
+	result := StructToMapLC(s, WithOmitEmpty())
+
+	if result["name"] != "hello" {
+		t.Errorf("Expected name='hello', got %v", result["name"])
+	}
+	if result["tag"] != "go" {
+		t.Errorf("Expected tag='go', got %v", result["tag"])
+	}
+	items, ok := result["items"].([]any)
+	if !ok || len(items) != 2 {
+		t.Errorf("Expected items with 2 elements, got %v", result["items"])
+	}
+}
+
+func TestStructToMapLC_CombinedOptions(t *testing.T) {
+	type Base struct {
+		BaseID string
+	}
+	type TestStruct struct {
+		Base
+		UserName string
+		AccountID string
+		Age      int
+	}
+
+	s := TestStruct{
+		Base:      Base{BaseID: "b1"},
+		UserName:  "",
+		AccountID: "a1",
+		Age:       0,
+	}
+
+	result := StructToMapLC(s, WithIDSuffix(), WithOmitEmpty())
+
+	// embedded field with ID suffix
+	if result["baseId"] != "b1" {
+		t.Errorf("Expected baseId='b1', got %v", result["baseId"])
+	}
+	// empty string should be omitted
+	if _, exists := result["userName"]; exists {
+		t.Errorf("Expected empty userName to be omitted")
+	}
+	// ID suffix + non-empty
+	if result["accountId"] != "a1" {
+		t.Errorf("Expected accountId='a1', got %v", result["accountId"])
+	}
+	// zero int should NOT be omitted
+	if _, exists := result["age"]; !exists {
+		t.Errorf("Expected zero int 'age' to be present")
+	}
+}
+
+func TestStructToMapLC_NoOptions_BackwardCompat(t *testing.T) {
+	type TestStruct struct {
+		UserID string
+		Name   string
+	}
+	s := TestStruct{UserID: "u1", Name: ""}
+	result := StructToMapLC(s)
+
+	// Without WithIDSuffix, "UserID" -> "userID" (not "userId")
+	if result["userID"] != "u1" {
+		t.Errorf("Expected userID='u1', got %v", result["userID"])
+	}
+	// Without WithOmitEmpty, empty string should be present
+	if _, exists := result["name"]; !exists {
+		t.Errorf("Expected empty name to be present without WithOmitEmpty")
+	}
+}
+
 func TestToCamelCase(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -184,6 +384,27 @@ func TestToCamelCase(t *testing.T) {
 		result := toCamelCase(tt.input)
 		if result != tt.expected {
 			t.Errorf("toCamelCase(%q) = %q, expected %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestConvertIDSuffix(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"userID", "userId"},
+		{"orderId", "orderId"},
+		{"iD", "id"},
+		{"name", "name"},
+		{"", ""},
+		{"orderID", "orderId"},
+	}
+
+	for _, tt := range tests {
+		result := convertIDSuffix(tt.input)
+		if result != tt.expected {
+			t.Errorf("convertIDSuffix(%q) = %q, expected %q", tt.input, result, tt.expected)
 		}
 	}
 }

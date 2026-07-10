@@ -198,6 +198,10 @@ func toCamelCase(s string) string {
 	return strings.ToLower(s[:1]) + s[1:]
 }
 
+// jsonMarshalerType is the reflect.Type for json.Marshaler, used to detect
+// structs that provide their own JSON serialization.
+var jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+
 // convertValue handles different types of field values
 func convertValue(v reflect.Value, o *options) any {
 	// Handle pointers
@@ -208,8 +212,24 @@ func convertValue(v reflect.Value, o *options) any {
 		return convertValue(v.Elem(), o)
 	}
 
-	// Handle nested structs
+	// Handle nested structs.
+	// If the struct (or its pointer) implements json.Marshaler, use MarshalJSON
+	// instead of reflecting over its fields.
 	if v.Kind() == reflect.Struct {
+		if marshaler, ok := asJSONMarshaler(v); ok {
+			b, err := marshaler.MarshalJSON()
+			if err != nil {
+				// Fall back to field-by-field reflection on marshal error.
+				return structToMap(v.Interface(), o)
+			}
+			var out any
+			if err := json.Unmarshal(b, &out); err != nil {
+				// If the JSON is a scalar or otherwise not unmarshalable into any,
+				// return the raw bytes as a string.
+				return string(b)
+			}
+			return out
+		}
 		return structToMap(v.Interface(), o)
 	}
 
@@ -247,4 +267,27 @@ func convertValue(v reflect.Value, o *options) any {
 
 	// Return primitive values as-is
 	return v.Interface()
+}
+
+// asJSONMarshaler returns a json.Marshaler if v (or a pointer to v) implements
+// the interface. This handles both value-receiver and pointer-receiver
+// implementations of MarshalJSON.
+func asJSONMarshaler(v reflect.Value) (json.Marshaler, bool) {
+	// Value type directly implements json.Marshaler.
+	if v.Type().Implements(jsonMarshalerType) {
+		m, ok := v.Interface().(json.Marshaler)
+		return m, ok
+	}
+	// Pointer type implements json.Marshaler — use an addressable copy if needed.
+	if reflect.PointerTo(v.Type()).Implements(jsonMarshalerType) {
+		addr := v
+		if !v.CanAddr() {
+			tmp := reflect.New(v.Type())
+			tmp.Elem().Set(v)
+			addr = tmp.Elem()
+		}
+		m, ok := addr.Addr().Interface().(json.Marshaler)
+		return m, ok
+	}
+	return nil, false
 }

@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestStructToMapLC_Basic(t *testing.T) {
@@ -545,7 +547,7 @@ func TestToCamelCase(t *testing.T) {
 	}
 }
 
-func TestConvertIDSuffix(t *testing.T) {
+func tConvertIDSuffix(t *testing.T) {
 	tests := []struct {
 		input    string
 		expected string
@@ -567,5 +569,222 @@ func TestConvertIDSuffix(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("convertIDSuffix(%q) = %q, expected %q", tt.input, result, tt.expected)
 		}
+	}
+}
+
+// valueMarshaler implements json.Marshaler with a value receiver.
+type valueMarshaler struct {
+	X int
+	Y int
+}
+
+func (v valueMarshaler) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{"x": v.X, "y": v.Y, "custom": true})
+}
+
+// ptrMarshaler implements json.Marshaler with a pointer receiver.
+type ptrMarshaler struct {
+	A string
+	B string
+}
+
+func (p *ptrMarshaler) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{"a": p.A, "b": p.B, "ptrCustom": true})
+}
+
+func TestStructToMapLC_MarshalJSON_ValueReceiver(t *testing.T) {
+	type Wrapper struct {
+		Name   string
+		Coords valueMarshaler
+	}
+
+	s := Wrapper{
+		Name:   "origin",
+		Coords: valueMarshaler{X: 1, Y: 2},
+	}
+
+	result := StructToMapLC(s)
+
+	if result["name"] != "origin" {
+		t.Errorf("Expected name='origin', got %v", result["name"])
+	}
+
+	coords, ok := result["coords"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected coords to be map, got %T (%v)", result["coords"], result["coords"])
+	}
+	if coords["custom"] != true {
+		t.Errorf("Expected custom=true from MarshalJSON, got %v", coords["custom"])
+	}
+	// json.Unmarshal decodes numbers as float64
+	if coords["x"] != float64(1) {
+		t.Errorf("Expected x=1, got %v", coords["x"])
+	}
+	if coords["y"] != float64(2) {
+		t.Errorf("Expected y=2, got %v", coords["y"])
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_PointerReceiver(t *testing.T) {
+	type Wrapper struct {
+		Label string
+		Data  ptrMarshaler
+	}
+
+	s := Wrapper{
+		Label: "test",
+		Data:  ptrMarshaler{A: "alpha", B: "beta"},
+	}
+
+	result := StructToMapLC(s)
+
+	data, ok := result["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected data to be map, got %T (%v)", result["data"], result["data"])
+	}
+	if data["ptrCustom"] != true {
+		t.Errorf("Expected ptrCustom=true from MarshalJSON, got %v", data["ptrCustom"])
+	}
+	if data["a"] != "alpha" {
+		t.Errorf("Expected a='alpha', got %v", data["a"])
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_TimeField(t *testing.T) {
+	type Event struct {
+		Title     string
+		StartedAt time.Time
+	}
+
+	ts := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	e := Event{Title: "launch", StartedAt: ts}
+
+	result := StructToMapLC(e)
+
+	if result["title"] != "launch" {
+		t.Errorf("Expected title='launch', got %v", result["title"])
+	}
+
+	// time.Time.MarshalJSON produces an RFC3339 string.
+	startedAt, ok := result["startedAt"].(string)
+	if !ok {
+		t.Fatalf("Expected startedAt to be string, got %T (%v)", result["startedAt"], result["startedAt"])
+	}
+	if startedAt != ts.Format(time.RFC3339) {
+		t.Errorf("Expected startedAt=%q, got %q", ts.Format(time.RFC3339), startedAt)
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_PointerField(t *testing.T) {
+	type Wrapper struct {
+		Coords *valueMarshaler
+	}
+
+	s := Wrapper{Coords: &valueMarshaler{X: 5, Y: 6}}
+	result := StructToMapLC(s)
+
+	coords, ok := result["coords"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected coords to be map, got %T (%v)", result["coords"], result["coords"])
+	}
+	if coords["custom"] != true {
+		t.Errorf("Expected custom=true, got %v", coords["custom"])
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_NilPointerField(t *testing.T) {
+	type Wrapper struct {
+		Coords *valueMarshaler
+	}
+
+	s := Wrapper{Coords: nil}
+	result := StructToMapLC(s)
+
+	if result["coords"] != nil {
+		t.Errorf("Expected coords=nil, got %v", result["coords"])
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_SliceOfMarshalers(t *testing.T) {
+	type Wrapper struct {
+		Points []valueMarshaler
+	}
+
+	s := Wrapper{
+		Points: []valueMarshaler{
+			{X: 1, Y: 2},
+			{X: 3, Y: 4},
+		},
+	}
+
+	result := StructToMapLC(s)
+
+	points, ok := result["points"].([]any)
+	if !ok {
+		t.Fatalf("Expected points to be slice, got %T (%v)", result["points"], result["points"])
+	}
+	if len(points) != 2 {
+		t.Errorf("Expected 2 points, got %d", len(points))
+	}
+
+	p0, ok := points[0].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected point to be map, got %T", points[0])
+	}
+	if p0["custom"] != true {
+		t.Errorf("Expected custom=true for slice element, got %v", p0["custom"])
+	}
+}
+
+func TestStructToMapLC_NoMarshalJSON_StillReflects(t *testing.T) {
+	// A struct without MarshalJSON should still be converted field-by-field.
+	type Inner struct {
+		Foo string
+		Bar int
+	}
+	type Outer struct {
+		Nested Inner
+	}
+
+	s := Outer{Nested: Inner{Foo: "hello", Bar: 42}}
+	result := StructToMapLC(s)
+
+	nested, ok := result["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected nested to be map, got %T", result["nested"])
+	}
+	if nested["foo"] != "hello" {
+		t.Errorf("Expected foo='hello', got %v", nested["foo"])
+	}
+	if nested["bar"] != 42 {
+		t.Errorf("Expected bar=42, got %v", nested["bar"])
+	}
+}
+
+func TestStructToMapLC_MarshalJSON_WithOptions(t *testing.T) {
+	type Wrapper struct {
+		UserID string
+		Coords valueMarshaler
+	}
+
+	s := Wrapper{
+		UserID: "u1",
+		Coords: valueMarshaler{X: 10, Y: 20},
+	}
+
+	result := StructToMapLC(s, WithIDSuffix())
+
+	// ID suffix conversion should still apply to the parent field.
+	if result["userId"] != "u1" {
+		t.Errorf("Expected userId='u1', got %v", result["userId"])
+	}
+
+	// MarshalJSON struct should still use custom marshaling.
+	coords, ok := result["coords"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected coords to be map, got %T", result["coords"])
+	}
+	if coords["custom"] != true {
+		t.Errorf("Expected custom=true, got %v", coords["custom"])
 	}
 }

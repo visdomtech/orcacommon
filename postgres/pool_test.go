@@ -139,7 +139,7 @@ func TestConnect_TCPrefix_CleanupTerminates(t *testing.T) {
 func loadTestDBConfig(t *testing.T) DBConfig {
 	t.Helper()
 	var dbcfg DBConfig
-	if err := env.Parse(&dbcfg, env.Options{Prefix: "DB_"}); err != nil {
+	if err := env.ParseWithOptions(&dbcfg, env.Options{Prefix: "DB_"}); err != nil {
 		t.Fatalf("parse DB config: %v", err)
 	}
 	return dbcfg

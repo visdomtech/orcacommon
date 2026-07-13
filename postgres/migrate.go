@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"ariga.io/atlas/sql/migrate"
@@ -141,20 +142,50 @@ func embedDir(fsys fs.FS, key string) (migrate.Dir, error) {
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]string) // version prefix -> first file seen
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		data, err := fs.ReadFile(fsys, e.Name())
+		name := e.Name()
+		// Guard against duplicate migration versions. Two .sql files sharing
+		// the same version prefix cause an opaque runtime panic inside the
+		// Atlas executor (index out of range on PartialHashes). Catch this
+		// early with a clear error instead.
+		if strings.HasSuffix(name, ".sql") {
+			if ver := versionPrefix(name); ver != "" {
+				if prev, ok := seen[ver]; ok {
+					return nil, fmt.Errorf(
+						"migrate: duplicate migration version %q: files %q and %q share the same version prefix "+
+							"(Atlas versions must be unique; rename one file to a different timestamp)",
+						ver, prev, name,
+					)
+				}
+				seen[ver] = name
+			}
+		}
+		data, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return nil, err
 		}
-		slog.Info("write mem sql file", "name", e.Name(), "size", len(data))
-		if err := mem.WriteFile(e.Name(), data); err != nil {
+		slog.Info("write mem sql file", "name", name, "size", len(data))
+		if err := mem.WriteFile(name, data); err != nil {
 			return nil, err
 		}
 	}
 	return mem, nil
+}
+
+// versionPrefix extracts the Atlas migration version (the part before the
+// first underscore) from a migration filename, e.g.
+// "20260712100000_desc.sql" -> "20260712100000". Returns "" for filenames
+// that don't follow the {version}_{description}.sql convention.
+func versionPrefix(name string) string {
+	idx := strings.Index(name, "_")
+	if idx <= 0 {
+		return ""
+	}
+	return name[:idx]
 }
 
 func acquireAdvisoryLock(ctx context.Context, db *sql.DB) error {

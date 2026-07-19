@@ -24,3 +24,11 @@ func WriteJSONResponse(w http.ResponseWriter, status int, v any) error {
 	w.WriteHeader(status)
 	return json.NewEncoder(w).Encode(v)
 }
+
+func RequestHost(req *http.Request) string {
+	forwardedHost := req.Header.Get("X-Forwarded-Host")
+	if forwardedHost != "" {
+		return forwardedHost
+	}
+	return req.Host
+}

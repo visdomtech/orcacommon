@@ -150,6 +150,7 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // should invoke pool.Close() when done with the connection.
 func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, error) {
 	var embeddedPG *embeddedpostgres.EmbeddedPostgres
+	var tcContainer testcontainers.Container
 
 	if strings.Contains(dbURL, "postgres:embedded:") {
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
@@ -240,7 +241,8 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 
 		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			dbUser, dbPassword, host, port.Port(), dbName)
-		slog.Info("TestContainer provisioned", "dbURL", dbURL)
+		slog.Info("TestContainer provisioned", "key", key, "host", host, "port", port.Port())
+		tcContainer = c
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -250,6 +252,9 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			embeddedPGLock.Lock()
 			delete(embeddedPGs, key)
 			embeddedPGLock.Unlock()
+		}
+		if tcContainer != nil {
+			_ = tcContainer.Terminate(context.Background())
 		}
 		return nil, fmt.Errorf("open pool: %w", err)
 	}

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,7 +21,6 @@ import (
 )
 
 var (
-	poolOnce      sync.Once
 	keyedPools    = make(map[string]*pgxpool.Pool)
 	keyedPoolLock sync.RWMutex
 )
@@ -34,19 +34,14 @@ func init() {
 // The pool is created on the first call and reused on subsequent calls.
 // A SIGTERM/SIGINT handler is registered to gracefully close the pool on shutdown.
 func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
-	var pool *pgxpool.Pool
-	var err error
-	poolOnce.Do(func() {
-		pool, err = OpenPoolWithKey(ctx, dbcfg, migrator, "__shared__")
-	})
-	return pool, err
+	return OpenPoolWithKey(ctx, dbcfg, migrator, "__shared__")
 }
 
 // OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found, it is created with the given key and save in the pools.
 // the cached pool will be returned directly on the second time it is called with given key.
 func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
 	if key == "" {
-		return OpenPool(ctx, dbcfg, migrator)
+		return nil, errors.New("non-empty key is required")
 	}
 	keyedPoolLock.RLock()
 	pool, found := keyedPools[key]

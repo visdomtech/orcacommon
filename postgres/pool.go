@@ -146,6 +146,8 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // key is the pool key; direct callers should supply a unique non-empty string.
 //
 // If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
+// Query parameters after the prefix are parsed as options (e.g. "?datapath=/tmp/pgdata" sets the
+// Postgres data directory via Config.DataPath). Unrecognized parameters are ignored.
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.

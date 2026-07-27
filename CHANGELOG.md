@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/visdomtech/orcacommon/compare/v0.3.0...v0.3.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* create a new release to fix the go.mod sum ([c9dfc65](https://github.com/visdomtech/orcacommon/commit/c9dfc65114c4cda498a2373c0a9938a6592dce36))
+
 ## [0.3.0](https://github.com/visdomtech/orcacommon/compare/v0.2.1...v0.3.0) (2026-07-27)
 
 

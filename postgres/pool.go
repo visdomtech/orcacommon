@@ -12,9 +12,11 @@ import (
 	"syscall"
 
 	"cloud.google.com/go/cloudsqlconn"
+	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"github.com/visdomtech/orcacommon/utils"
 )
 
 var (
@@ -128,10 +130,43 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 }
 
 // Connect returns a pgxpool.Pool for the given database URL.
+// If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
 func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
+	if strings.Contains(dbURL, "postgres:embedded:") {
+		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
+
+		const (
+			dbUser     = "test"
+			dbPassword = "test"
+			dbName     = "test"
+		)
+
+		port, err := utils.GetFreePort()
+		if err != nil {
+			return nil, fmt.Errorf("get free port: %w", err)
+		}
+
+		postgres := embeddedpostgres.NewDatabase(
+			embeddedpostgres.DefaultConfig().
+				Username(dbUser).
+				Password(dbPassword).
+				Database(dbName).
+				Port(port).
+				Version(embeddedpostgres.V17),
+		)
+
+		if err := postgres.Start(); err != nil {
+			return nil, fmt.Errorf("start embedded postgres: %w", err)
+		}
+
+		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+			dbUser, dbPassword, port, dbName)
+		slog.Info("Embedded Postgres provisioned", "dbURL", dbURL)
+	}
+
 	if strings.Contains(dbURL, "postgres:tc:") {
 		slog.Info("'postgres:tc:' detected — provisioning a TestContainer")
 

@@ -46,7 +46,11 @@ type EmailMessage struct {
 }
 
 // MailgunConfig holds the configuration for a MailgunClient.
-// Environment variables are read with the "MAILGUN_" prefix (e.g. MAILGUN_ENDPOINT, MAILGUN_PASSWORD).
+//
+// The struct tags follow the caarlos0/env convention so that consumers using
+// that library can parse environment variables with a "MAILGUN_" prefix
+// (e.g. MAILGUN_ENDPOINT, MAILGUN_PASSWORD). The tags themselves do not
+// trigger automatic env-var reading; the caller is responsible for parsing.
 type MailgunConfig struct {
 	Endpoint string `env:"ENDPOINT"`
 	User     string `env:"USER"`

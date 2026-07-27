@@ -78,20 +78,32 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 		return nil, err
 	}
 	if err = runMigrations(ctx, pool, migrator, key); err != nil {
+		pool.Close()
 		return nil, err
 	}
 	return pool, nil
 }
 
 // gracefulShutdown blocks until SIGTERM or SIGINT is received, then closes
-// the shared connection pool. It is intended to be launched as a goroutine
-// from OpenPool and should not be called directly.
+// all connection pools and stops any embedded Postgres instances. It is
+// intended to be launched as a goroutine from init() and should not be
+// called directly.
 func gracefulShutdown() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
 	slog.Info("received shutdown signal, closing database pools", "signal", sig)
 
+	// Close connection pools first so they can cleanly drain before the DB servers stop.
+	keyedPoolLock.Lock()
+	slog.Info("closing the keyed pools", "count", len(keyedPools))
+	for _, pool := range keyedPools {
+		pool.Close()
+	}
+	clear(keyedPools)
+	keyedPoolLock.Unlock()
+
+	// Stop embedded Postgres instances after pools are closed.
 	embeddedPGLock.Lock()
 	slog.Info("stopping embedded Postgres instances", "count", len(embeddedPGs))
 	for k, pg := range embeddedPGs {
@@ -101,14 +113,6 @@ func gracefulShutdown() {
 	}
 	clear(embeddedPGs)
 	embeddedPGLock.Unlock()
-
-	keyedPoolLock.Lock()
-	defer keyedPoolLock.Unlock()
-	slog.Info("closing the keyed pools", "count", len(keyedPools))
-	for _, pool := range keyedPools {
-		pool.Close()
-	}
-	clear(keyedPools)
 }
 
 func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
@@ -135,6 +139,11 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 }
 
 // Connect returns a pgxpool.Pool for the given database URL.
+//
+// The key parameter identifies this connection for tracking embedded Postgres
+// instances used during graceful shutdown. When called via OpenPoolWithKey the
+// key is the pool key; direct callers should supply a unique non-empty string.
+//
 // If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
@@ -171,12 +180,16 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		embeddedPG = postgres
 
 		embeddedPGLock.Lock()
+		if old, ok := embeddedPGs[key]; ok {
+			slog.Warn("replacing existing embedded Postgres entry", "key", key)
+			_ = old.Stop()
+		}
 		embeddedPGs[key] = postgres
 		embeddedPGLock.Unlock()
 
 		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 			dbUser, dbPassword, port, dbName)
-		slog.Info("Embedded Postgres provisioned", "dbURL", dbURL)
+		slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 	}
 
 	if strings.Contains(dbURL, "postgres:tc:") {
@@ -234,6 +247,9 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	if err != nil {
 		if embeddedPG != nil {
 			_ = embeddedPG.Stop()
+			embeddedPGLock.Lock()
+			delete(embeddedPGs, key)
+			embeddedPGLock.Unlock()
 		}
 		return nil, fmt.Errorf("open pool: %w", err)
 	}

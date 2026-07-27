@@ -76,7 +76,7 @@ func TestConnect_NormalURL(t *testing.T) {
 	defer terminate()
 
 	ctx := context.Background()
-	pool, err := Connect(ctx, dsn)
+	pool, err := Connect(ctx, dsn, "test-normal-url")
 	if err != nil {
 		t.Fatalf("Connect with plain URL: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestConnect_NormalURL(t *testing.T) {
 func TestConnect_TCPrefix_NoTag(t *testing.T) {
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, "postgres:tc:")
+	pool, err := Connect(ctx, "postgres:tc:", "test-tc-no-tag")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestConnect_TCPrefix_NoTag(t *testing.T) {
 func TestConnect_TCPrefix_WithTag(t *testing.T) {
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, "postgres:tc:17.5")
+	pool, err := Connect(ctx, "postgres:tc:17.5", "test-tc-with-tag")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestConnect_TCPrefix_WithTag(t *testing.T) {
 func TestConnect_TCPrefix_CleanupTerminates(t *testing.T) {
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, "postgres:tc:")
+	pool, err := Connect(ctx, "postgres:tc:", "test-tc-cleanup")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestConnect_TCPrefix_CleanupTerminates(t *testing.T) {
 func TestConnect_EmbeddedPrefix(t *testing.T) {
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, "postgres:embedded:")
+	pool, err := Connect(ctx, "postgres:embedded:", "test-embedded")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestConnect_EmbeddedPrefix(t *testing.T) {
 func TestConnect_EmbeddedPrefix_CleanupTerminates(t *testing.T) {
 	ctx := context.Background()
 
-	pool, err := Connect(ctx, "postgres:embedded:")
+	pool, err := Connect(ctx, "postgres:embedded:", "test-embedded-cleanup")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -223,4 +223,4 @@ func TestOpenPool_Singleton(t *testing.T) {
 }
 
 // Compile-time check: Connect must be callable with a *pgxpool.Pool return.
-var _ func(context.Context, string) (*pgxpool.Pool, error) = Connect
+var _ func(context.Context, string, string) (*pgxpool.Pool, error) = Connect

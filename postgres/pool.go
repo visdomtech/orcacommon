@@ -23,6 +23,9 @@ import (
 var (
 	keyedPools    = make(map[string]*pgxpool.Pool)
 	keyedPoolLock sync.RWMutex
+
+	embeddedPGs    = make(map[string]*embeddedpostgres.EmbeddedPostgres)
+	embeddedPGLock sync.Mutex
 )
 
 func init() {
@@ -69,7 +72,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 	if dbcfg.CloudSQLInstance != "" {
 		pool, err = openCloudSQL(ctx, dbcfg)
 	} else {
-		pool, err = Connect(ctx, dbcfg.ResolveURL())
+		pool, err = Connect(ctx, dbcfg.ResolveURL(), key)
 	}
 	if err != nil {
 		return nil, err
@@ -88,6 +91,17 @@ func gracefulShutdown() {
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
 	slog.Info("received shutdown signal, closing database pools", "signal", sig)
+
+	embeddedPGLock.Lock()
+	slog.Info("stopping embedded Postgres instances", "count", len(embeddedPGs))
+	for k, pg := range embeddedPGs {
+		if err := pg.Stop(); err != nil {
+			slog.Error("stop embedded Postgres", "key", k, "error", err)
+		}
+	}
+	clear(embeddedPGs)
+	embeddedPGLock.Unlock()
+
 	keyedPoolLock.Lock()
 	defer keyedPoolLock.Unlock()
 	slog.Info("closing the keyed pools", "count", len(keyedPools))
@@ -125,7 +139,7 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
-func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
+func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, error) {
 	var embeddedPG *embeddedpostgres.EmbeddedPostgres
 
 	if strings.Contains(dbURL, "postgres:embedded:") {
@@ -155,6 +169,10 @@ func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 			return nil, fmt.Errorf("start embedded postgres: %w", err)
 		}
 		embeddedPG = postgres
+
+		embeddedPGLock.Lock()
+		embeddedPGs[key] = postgres
+		embeddedPGLock.Unlock()
 
 		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 			dbUser, dbPassword, port, dbName)

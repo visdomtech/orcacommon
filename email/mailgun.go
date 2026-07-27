@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -44,22 +45,42 @@ type EmailMessage struct {
 	Attachments []Attachment
 }
 
-// MailgunClient sends emails via the Mailgun API.
-type MailgunClient struct {
-	endpoint string
-	user     string
-	password string
-	client   *http.Client
+// MailgunConfig holds the configuration for a MailgunClient.
+//
+// The struct tags follow the caarlos0/env convention so that consumers using
+// that library can parse environment variables with a "MAILGUN_" prefix
+// (e.g. MAILGUN_ENDPOINT, MAILGUN_PASSWORD). The tags themselves do not
+// trigger automatic env-var reading; the caller is responsible for parsing.
+type MailgunConfig struct {
+	Endpoint string `env:"ENDPOINT"`
+	User     string `env:"USER"`
+	Password string `env:"PASSWORD"`
+	From     string `env:"FROM" envDefault:"noti@doublefin.com"`
 }
 
-// NewMailgunClient creates a MailgunClient from plain credentials.
+// LogValue implements slog.LogValuer, redacting the password.
+func (c MailgunConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("endpoint", c.Endpoint),
+		slog.String("user", c.User),
+		slog.String("password", "[REDACTED]"),
+		slog.String("from", c.From),
+	)
+}
+
+// MailgunClient sends emails via the Mailgun API.
+type MailgunClient struct {
+	config MailgunConfig
+	client *http.Client
+}
+
+// NewMailgunClient creates a MailgunClient from a MailgunConfig.
 // The returned client uses a dedicated http.Client with a 30-second timeout
 // and connection pooling.
-func NewMailgunClient(endpoint, user, password string) *MailgunClient {
+func NewMailgunClient(cfg MailgunConfig) *MailgunClient {
+	cfg.Endpoint = strings.TrimSuffix(cfg.Endpoint, "/")
 	return &MailgunClient{
-		endpoint: strings.TrimSuffix(endpoint, "/"),
-		user:     user,
-		password: password,
+		config: cfg,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -70,7 +91,7 @@ func NewMailgunClient(endpoint, user, password string) *MailgunClient {
 				MaxIdleConns:          10,
 				MaxIdleConnsPerHost:   5,
 				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:  10 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},
@@ -82,7 +103,7 @@ var _ Sender = (*MailgunClient)(nil)
 
 // Send posts the email to Mailgun.
 func (c *MailgunClient) Send(ctx context.Context, msg *EmailMessage) (string, error) {
-	if c.endpoint == "" || c.user == "" || c.password == "" {
+	if c.config.Endpoint == "" || c.config.User == "" || c.config.Password == "" {
 		return "", fmt.Errorf("mailgun client not configured: check MAILGUN_ENDPOINT, MAILGUN_USER, MAILGUN_PASSWORD")
 	}
 	if len(msg.To) == 0 {
@@ -107,7 +128,15 @@ func (c *MailgunClient) Send(ctx context.Context, msg *EmailMessage) (string, er
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	_ = writer.WriteField("from", msg.From)
+	from := msg.From
+	if from == "" {
+		from = c.config.From
+	}
+	if from == "" {
+		return "", fmt.Errorf("from address is required: set MailgunConfig.From or EmailMessage.From")
+	}
+
+	_ = writer.WriteField("from", from)
 	_ = writer.WriteField("to", strings.Join(msg.To, ","))
 	_ = writer.WriteField("subject", msg.Subject)
 	if msg.Text != "" {
@@ -142,12 +171,12 @@ func (c *MailgunClient) Send(ctx context.Context, msg *EmailMessage) (string, er
 
 	writer.Close()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/messages", &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.Endpoint+"/messages", &body)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.user+":"+c.password)))
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(c.config.User+":"+c.config.Password)))
 
 	resp, err := c.client.Do(req)
 	if err != nil {

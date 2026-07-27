@@ -48,7 +48,7 @@ func writeChecksum(t *testing.T, dir *migrate.MemDir) {
 // The embedDir() guard prevents this from happening in practice.
 func TestRepro_DuplicateVersionPanic(t *testing.T) {
 	ctx := context.Background()
-	pool, err := Connect(ctx, "postgres:tc:")
+	pool, err := Connect(ctx, "postgres:tc:", "test-dupver-repro")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestRepro_DuplicateVersionPanic(t *testing.T) {
 // versions apply cleanly (no panic, no error).
 func TestRepro_UniqueVersionOK(t *testing.T) {
 	ctx := context.Background()
-	pool, err := Connect(ctx, "postgres:tc:")
+	pool, err := Connect(ctx, "postgres:tc:", "test-uniqver-repro")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}

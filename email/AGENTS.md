@@ -13,9 +13,13 @@ Shared Mailgun-backed email sender for transactional email delivery. Zero extern
 ```go
 import "github.com/visdomtech/orcacommon/email"
 
-client := email.NewMailgunClient(endpoint, user, password)
+client := email.NewMailgunClient(email.MailgunConfig{
+    Endpoint: endpoint,
+    User:     user,
+    Password: password,
+    From:     "noreply@example.com",
+})
 client.Send(ctx, &email.EmailMessage{
-    From:    "noreply@example.com",
     To:      []string{"user@example.com"},
     Subject: "Hello",
     HTML:    "<p>Hello!</p>",

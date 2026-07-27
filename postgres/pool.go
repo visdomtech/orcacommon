@@ -21,9 +21,6 @@ import (
 
 var (
 	poolOnce      sync.Once
-	sharedPool    *pgxpool.Pool
-	sharedPoolErr error
-
 	keyedPools    = make(map[string]*pgxpool.Pool)
 	keyedPoolLock sync.RWMutex
 )
@@ -37,10 +34,12 @@ func init() {
 // The pool is created on the first call and reused on subsequent calls.
 // A SIGTERM/SIGINT handler is registered to gracefully close the pool on shutdown.
 func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool.Pool, error) {
+	var pool *pgxpool.Pool
+	var err error
 	poolOnce.Do(func() {
-		sharedPool, sharedPoolErr = createPool(ctx, dbcfg, migrator, "__shared__")
+		pool, err = OpenPoolWithKey(ctx, dbcfg, migrator, "__shared__")
 	})
-	return sharedPool, sharedPoolErr
+	return pool, err
 }
 
 // OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found, it is created with the given key and save in the pools.
@@ -52,6 +51,7 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 	keyedPoolLock.RLock()
 	pool, found := keyedPools[key]
 	keyedPoolLock.RUnlock()
+
 	if found {
 		return pool, nil
 	}
@@ -93,10 +93,6 @@ func gracefulShutdown() {
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
 	slog.Info("received shutdown signal, closing database pools", "signal", sig)
-	if sharedPool != nil {
-		slog.Info("closing the shared global instance pool")
-		sharedPool.Close()
-	}
 	keyedPoolLock.Lock()
 	defer keyedPoolLock.Unlock()
 	slog.Info("closing the keyed pools", "count", len(keyedPools))
@@ -155,7 +151,7 @@ func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 				Password(dbPassword).
 				Database(dbName).
 				Port(port).
-				Version(embeddedpostgres.V17),
+				Version(embeddedpostgres.V18),
 		)
 
 		if err := postgres.Start(); err != nil {

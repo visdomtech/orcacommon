@@ -51,7 +51,7 @@ type MailgunConfig struct {
 	Endpoint string `env:"ENDPOINT"`
 	User     string `env:"USER"`
 	Password string `env:"PASSWORD"`
-	From     string `env:"FROM"`
+	From     string `env:"FROM" envDefault:"noti@doublefin.com"`
 }
 
 // LogValue implements slog.LogValuer, redacting the password.
@@ -87,7 +87,7 @@ func NewMailgunClient(cfg MailgunConfig) *MailgunClient {
 				MaxIdleConns:          10,
 				MaxIdleConnsPerHost:   5,
 				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:  10 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 			},
 		},

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/visdomtech/orcacommon/compare/v0.3.1...v0.3.2) (2026-07-27)
+
+
+### Bug Fixes
+
+* track embedded Postgres instances and stop them in gracefulShutdown and improve mailgun ([#6](https://github.com/visdomtech/orcacommon/issues/6)) ([511f63a](https://github.com/visdomtech/orcacommon/commit/511f63a6acec9e8a8198bea047b6e9d7bb752cd0))
+
 ## [0.3.1](https://github.com/visdomtech/orcacommon/compare/v0.3.0...v0.3.1) (2026-07-27)
 
 

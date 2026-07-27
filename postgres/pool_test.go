@@ -7,6 +7,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"testing"
 
@@ -219,6 +220,30 @@ func TestOpenPool_Singleton(t *testing.T) {
 	}
 	if err := p1.Ping(ctx); err != nil {
 		t.Fatalf("ping: %v", err)
+	}
+}
+
+func TestConnect_EmbeddedPrefix_WithDataPath(t *testing.T) {
+	ctx := context.Background()
+	dataPath := t.TempDir()
+
+	pool, err := Connect(ctx, "postgres:embedded:?datapath="+url.QueryEscape(dataPath), "test-embedded-datapath")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+
+	// Verify the data path was actually used by embedded postgres.
+	entries, err := os.ReadDir(dataPath)
+	if err != nil {
+		t.Fatalf("read dataPath: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected dataPath to contain postgres data files, but it was empty")
 	}
 }
 

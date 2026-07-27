@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -145,6 +146,8 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // key is the pool key; direct callers should supply a unique non-empty string.
 //
 // If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
+// Query parameters after the prefix are parsed as options (e.g. "?datapath=/tmp/pgdata" sets the
+// Postgres data directory via Config.DataPath). Unrecognized parameters are ignored.
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
@@ -161,19 +164,26 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			dbName     = "test"
 		)
 
+		// Parse optional query parameters appended after the prefix.
+		// e.g. "postgres:embedded:?datapath=/tmp/pgdata"
+		embeddedOpts := parseEmbeddedOptions(dbURL)
+
 		port, err := utils.GetFreePort()
 		if err != nil {
 			return nil, fmt.Errorf("get free port: %w", err)
 		}
 
-		postgres := embeddedpostgres.NewDatabase(
-			embeddedpostgres.DefaultConfig().
-				Username(dbUser).
-				Password(dbPassword).
-				Database(dbName).
-				Port(uint32(port)).
-				Version(embeddedpostgres.V18),
-		)
+		cfg := embeddedpostgres.DefaultConfig().
+			Username(dbUser).
+			Password(dbPassword).
+			Database(dbName).
+			Port(uint32(port)).
+			Version(embeddedpostgres.V18)
+		if embeddedOpts.dataPath != "" {
+			cfg = cfg.DataPath(embeddedOpts.dataPath)
+		}
+
+		postgres := embeddedpostgres.NewDatabase(cfg)
 
 		if err := postgres.Start(); err != nil {
 			return nil, fmt.Errorf("start embedded postgres: %w", err)
@@ -260,4 +270,36 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	}
 
 	return pool, nil
+}
+
+// embeddedOptions holds options parsed from the query string of a
+// "postgres:embedded:" URL.
+type embeddedOptions struct {
+	dataPath string
+}
+
+// parseEmbeddedOptions extracts options from query parameters appended to
+// a "postgres:embedded:" URL. Unrecognized parameters are ignored.
+//
+// Supported parameters:
+//
+//	datapath — Postgres data directory (maps to Config.DataPath)
+func parseEmbeddedOptions(dbURL string) embeddedOptions {
+	const prefix = "postgres:embedded:"
+	i := strings.Index(dbURL, prefix)
+	if i < 0 {
+		return embeddedOptions{}
+	}
+	suffix := dbURL[i+len(prefix):]
+	if !strings.HasPrefix(suffix, "?") {
+		return embeddedOptions{}
+	}
+	q, err := url.ParseQuery(strings.TrimPrefix(suffix, "?"))
+	if err != nil {
+		slog.Warn("failed to parse embedded postgres query params", "error", err)
+		return embeddedOptions{}
+	}
+	return embeddedOptions{
+		dataPath: q.Get("datapath"),
+	}
 }

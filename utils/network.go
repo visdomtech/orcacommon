@@ -34,7 +34,10 @@ func RequestHost(req *http.Request) string {
 }
 
 // GetFreePort asks the OS to allocate an unused port on localhost.
-func GetFreePort() (uint32, error) {
+// Note: There is a small race window between when the port is returned
+// and when it is actually used by the caller. In high-contention scenarios,
+// the port may be taken by another process.
+func GetFreePort() (int, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
@@ -42,5 +45,5 @@ func GetFreePort() (uint32, error) {
 	defer listener.Close()
 
 	addr := listener.Addr().(*net.TCPAddr)
-	return uint32(addr.Port), nil
+	return addr.Port, nil
 }

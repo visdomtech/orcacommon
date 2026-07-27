@@ -126,6 +126,8 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
 func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
+	var embeddedPG *embeddedpostgres.EmbeddedPostgres
+
 	if strings.Contains(dbURL, "postgres:embedded:") {
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
 
@@ -145,13 +147,14 @@ func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 				Username(dbUser).
 				Password(dbPassword).
 				Database(dbName).
-				Port(port).
+				Port(uint32(port)).
 				Version(embeddedpostgres.V18),
 		)
 
 		if err := postgres.Start(); err != nil {
 			return nil, fmt.Errorf("start embedded postgres: %w", err)
 		}
+		embeddedPG = postgres
 
 		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 			dbUser, dbPassword, port, dbName)
@@ -211,6 +214,9 @@ func Connect(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+		if embeddedPG != nil {
+			_ = embeddedPG.Stop()
+		}
 		return nil, fmt.Errorf("open pool: %w", err)
 	}
 

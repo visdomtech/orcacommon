@@ -149,6 +149,26 @@ func TestConnect_EmbeddedPrefix(t *testing.T) {
 	}
 }
 
+func TestConnect_EmbeddedPrefix_CleanupTerminates(t *testing.T) {
+	ctx := context.Background()
+
+	pool, err := Connect(ctx, "postgres:embedded:")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		t.Fatalf("ping before cleanup: %v", err)
+	}
+
+	pool.Close()
+
+	if err := pool.Ping(ctx); err == nil {
+		t.Fatal("expected ping to fail after pool.Close(), but it succeeded")
+	}
+}
+
 // loadTestDBConfig parses DB_-prefixed env vars into a DBConfig for tests.
 func loadTestDBConfig(t *testing.T) DBConfig {
 	t.Helper()

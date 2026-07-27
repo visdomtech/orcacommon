@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -45,11 +46,22 @@ type EmailMessage struct {
 }
 
 // MailgunConfig holds the configuration for a MailgunClient.
+// Environment variables are read with the "MAILGUN_" prefix (e.g. MAILGUN_ENDPOINT, MAILGUN_PASSWORD).
 type MailgunConfig struct {
-	Endpoint string
-	User     string
-	Password string
-	From     string
+	Endpoint string `env:"ENDPOINT"`
+	User     string `env:"USER"`
+	Password string `env:"PASSWORD"`
+	From     string `env:"FROM"`
+}
+
+// LogValue implements slog.LogValuer, redacting the password.
+func (c MailgunConfig) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("endpoint", c.Endpoint),
+		slog.String("user", c.User),
+		slog.String("password", "[REDACTED]"),
+		slog.String("from", c.From),
+	)
 }
 
 // MailgunClient sends emails via the Mailgun API.

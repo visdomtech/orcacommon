@@ -278,7 +278,7 @@ func TestReadPostmasterPort(t *testing.T) {
 func TestIsEmbeddedPGRunning(t *testing.T) {
 	t.Run("returns false when data path not initialized", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		result := IsEmbeddedPGRunning(tmpDir, "127.0.0.1", 5432)
+		result := IsEmbeddedPGRunning(tmpDir)
 		if result {
 			t.Error("IsEmbeddedPGRunning() = true for uninitialized data path, want false")
 		}
@@ -291,7 +291,7 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 			t.Fatalf("Failed to create PG_VERSION: %v", err)
 		}
 
-		result := IsEmbeddedPGRunning(tmpDir, "127.0.0.1", 5432)
+		result := IsEmbeddedPGRunning(tmpDir)
 		if result {
 			t.Error("IsEmbeddedPGRunning() = true when no PID file, want false")
 		}

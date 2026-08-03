@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -175,6 +176,12 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		// If so, reuse it instead of starting a new instance.
 		if running, existingPort := utils.ReuseEmbeddedPG(opts.dataPath); running {
 			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
+			// When reusing an existing data directory, the target database may not
+			// exist (embedded-postgres only creates it during initial initdb).
+			// Connect to the system "postgres" database to ensure it exists.
+			if err := ensureDatabaseExists("127.0.0.1", existingPort, opts.dbUser, opts.dbPassword, opts.dbName); err != nil {
+				return nil, fmt.Errorf("ensure database %q exists: %w", opts.dbName, err)
+			}
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
@@ -290,6 +297,40 @@ type embeddedOptions struct {
 	dbUser     string
 	dbPassword string
 	dbName     string
+}
+
+// ensureDatabaseExists connects to the default "postgres" system database and
+// creates targetDB if it does not already exist. This is necessary when reusing
+// an existing embedded-postgres data directory, since the library only runs
+// createdb during initial initdb.
+//
+// Note: PostgreSQL does not allow parameterized database names in DDL, so we
+// use quoteIdent to safely escape the identifier.
+func ensureDatabaseExists(host string, port int, user, password, targetDB string) error {
+	rootConnStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
+		host, port, user, password,
+	)
+
+	db, err := sql.Open("pgx", rootConnStr)
+	if err != nil {
+		return fmt.Errorf("connect to root postgres db: %w", err)
+	}
+	defer db.Close()
+
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", targetDB).Scan(&exists); err != nil {
+		return fmt.Errorf("query pg_database: %w", err)
+	}
+
+	if !exists {
+		createSQL := "CREATE DATABASE " + quoteIdent(targetDB)
+		if _, err := db.Exec(createSQL); err != nil {
+			return fmt.Errorf("create database %q: %w", targetDB, err)
+		}
+		slog.Info("created database on existing embedded postgres", "database", targetDB)
+	}
+	return nil
 }
 
 // parseEmbeddedOptions extracts options from query parameters appended to

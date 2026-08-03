@@ -147,8 +147,19 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // key is the pool key; direct callers should supply a unique non-empty string.
 //
 // If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
-// Query parameters after the prefix are parsed as options (e.g. "?datapath=/tmp/pgdata" sets the
-// Postgres data directory via Config.DataPath). Unrecognized parameters are ignored.
+// Query parameters after the prefix are parsed as options:
+//   - datapath: Postgres data directory (maps to Config.DataPath)
+//   - user:     database user (default "test")
+//   - password: database password (default "test")
+//   - name:     database name (default "test")
+//
+// Example: "postgres:embedded:?datapath=/tmp/pgdata&user=myuser&name=mydb"
+//
+// If a running embedded Postgres is detected at the configured datapath, it is
+// reused instead of starting a new instance. Reused instances are NOT managed
+// by the graceful shutdown handler; the original process that started the
+// embedded Postgres is responsible for its lifecycle.
+//
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
@@ -175,7 +186,9 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		// Check if an embedded Postgres is already running at the data path.
 		// If so, reuse it instead of starting a new instance.
 		if running, existingPort := utils.ReuseEmbeddedPG(opts.dataPath); running {
-			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
+			slog.Info("reusing existing embedded Postgres (not managed by graceful shutdown)",
+				"key", key, "dataPath", opts.dataPath, "port", existingPort,
+				"user", opts.dbUser, "database", opts.dbName)
 			// When reusing an existing data directory, the target database may not
 			// exist (embedded-postgres only creates it during initial initdb).
 			// Connect to the system "postgres" database to ensure it exists.
@@ -185,6 +198,12 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
+			if opts.dataPath == "" {
+				slog.Info("no datapath configured; starting new embedded Postgres (no reuse)")
+			} else {
+				slog.Info("no running embedded Postgres found at datapath; starting new instance",
+					"dataPath", opts.dataPath)
+			}
 			port, err := utils.GetFreePort()
 			if err != nil {
 				return nil, fmt.Errorf("get free port: %w", err)
@@ -307,14 +326,22 @@ type embeddedOptions struct {
 // Note: PostgreSQL does not allow parameterized database names in DDL, so we
 // use quoteIdent to safely escape the identifier.
 func ensureDatabaseExists(host string, port int, user, password, targetDB string) error {
-	rootConnStr := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
-		host, port, user, password,
-	)
+	// Use URL-form connection string to safely handle special characters in
+	// user/password (key=value DSN format does not escape special chars).
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(user, password),
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		Path:   "postgres",
+	}
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	u.RawQuery = q.Encode()
+	rootConnStr := u.String()
 
 	db, err := sql.Open("pgx", rootConnStr)
 	if err != nil {
-		return fmt.Errorf("connect to root postgres db: %w", err)
+		return fmt.Errorf("connect to root postgres db (host=%s port=%d user=%s): %w", host, port, user, err)
 	}
 	defer db.Close()
 
@@ -329,6 +356,8 @@ func ensureDatabaseExists(host string, port int, user, password, targetDB string
 			return fmt.Errorf("create database %q: %w", targetDB, err)
 		}
 		slog.Info("created database on existing embedded postgres", "database", targetDB)
+	} else {
+		slog.Info("database already exists on embedded postgres", "database", targetDB)
 	}
 	return nil
 }
@@ -339,6 +368,9 @@ func ensureDatabaseExists(host string, port int, user, password, targetDB string
 // Supported parameters:
 //
 //	datapath — Postgres data directory (maps to Config.DataPath)
+//	user     — database user (default "test")
+//	password — database password (default "test")
+//	name     — database name (default "test")
 func parseEmbeddedOptions(dbURL string) embeddedOptions {
 	const prefix = "postgres:embedded:"
 	i := strings.Index(dbURL, prefix)

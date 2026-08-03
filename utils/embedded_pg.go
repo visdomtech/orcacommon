@@ -68,6 +68,9 @@ func CheckPIDFile(dataPath string) (exists bool, alive bool, pid int, err error)
 			return true, false, parsedPID, nil
 		}
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		return true, false, 0, fmt.Errorf("read postmaster.pid: %w", scanErr)
+	}
 	return true, false, 0, nil
 }
 

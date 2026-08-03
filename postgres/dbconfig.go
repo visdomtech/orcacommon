@@ -33,12 +33,14 @@ func (d DBConfig) ResolveURL() string {
 	return r.Replace(d.DatabaseURLTemplate)
 }
 
+// IsEmbeddedPostgres reports whether dbURL starts with the "postgres:embedded:" prefix.
 func IsEmbeddedPostgres(dbURL string) bool {
-	return strings.Contains(dbURL, "postgres:embedded:")
+	return strings.HasPrefix(dbURL, "postgres:embedded:")
 }
 
+// IsTestContainer reports whether dbURL starts with the "postgres:tc:" prefix.
 func IsTestContainer(dbURL string) bool {
-	return strings.Contains(dbURL, "postgres:tc:")
+	return strings.HasPrefix(dbURL, "postgres:tc:")
 }
 
 // LogValue implements slog.LogValuer, redacting the password.

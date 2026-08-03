@@ -297,3 +297,67 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 		}
 	})
 }
+
+func TestReuseEmbeddedPG(t *testing.T) {
+	t.Run("returns false for empty dataPath", func(t *testing.T) {
+		running, port := ReuseEmbeddedPG("")
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG(\"\") = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns false when no PID file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG() = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns true and port when PG is running", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Start a TCP listener to simulate a running PG port.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Failed to create listener: %v", err)
+		}
+		defer listener.Close()
+		listenPort := listener.Addr().(*net.TCPAddr).Port
+
+		// Write a valid postmaster.pid with current PID and the listening port.
+		pidPath := filepath.Join(tmpDir, "postmaster.pid")
+		content := fmt.Sprintf("%d\n%s\n1691000000\n%d\n/tmp\n", os.Getpid(), tmpDir, listenPort)
+		if err := os.WriteFile(pidPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if !running {
+			t.Error("ReuseEmbeddedPG() = false, want true for running PG")
+		}
+		if port != listenPort {
+			t.Errorf("ReuseEmbeddedPG() port = %d, want %d", port, listenPort)
+		}
+	})
+
+	t.Run("returns false when PID alive but port not listening", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Write postmaster.pid with current PID but a port nobody is listening on.
+		freePort, err := GetFreePort()
+		if err != nil {
+			t.Fatalf("GetFreePort: %v", err)
+		}
+		pidPath := filepath.Join(tmpDir, "postmaster.pid")
+		content := fmt.Sprintf("%d\n%s\n1691000000\n%d\n/tmp\n", os.Getpid(), tmpDir, freePort)
+		if err := os.WriteFile(pidPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running {
+			t.Errorf("ReuseEmbeddedPG() = (true, %d), want (false, 0) for dead port", port)
+		}
+	})
+}

@@ -57,9 +57,6 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 
 	// Set search_path so that atlas operates within the specified schema.
 	// The default is "public" (DBConfig.MigrationSchema).
-	if schema == "" {
-		return fmt.Errorf("migrate: empty schema name")
-	}
 	if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
 		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
 	}
@@ -361,6 +358,7 @@ func (r *pgRevisions) scanRevision(s scanner) (*migrate.Revision, error) {
 // quoteIdent quotes a PostgreSQL identifier (schema/table name) to prevent SQL injection.
 // It doubles any embedded double-quotes and wraps the result in double-quotes.
 func quoteIdent(name string) string {
+	name = strings.ReplaceAll(name, "\x00", "")
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 

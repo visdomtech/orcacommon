@@ -158,22 +158,25 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	if strings.Contains(dbURL, "postgres:embedded:") {
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
 
-		const (
-			dbUser     = "test"
-			dbPassword = "test"
-			dbName     = "test"
-		)
-
 		// Parse optional query parameters appended after the prefix.
 		// e.g. "postgres:embedded:?datapath=/tmp/pgdata"
-		embeddedOpts := parseEmbeddedOptions(dbURL)
+		opts := parseEmbeddedOptions(dbURL)
+		if opts.dbUser == "" {
+			opts.dbUser = "test"
+		}
+		if opts.dbPassword == "" {
+			opts.dbPassword = "test"
+		}
+		if opts.dbName == "" {
+			opts.dbName = "test"
+		}
 
 		// Check if an embedded Postgres is already running at the data path.
 		// If so, reuse it instead of starting a new instance.
-		if running, existingPort := reuseEmbeddedPG(embeddedOpts.dataPath); running {
-			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", embeddedOpts.dataPath, "port", existingPort)
+		if running, existingPort := reuseEmbeddedPG(opts.dataPath); running {
+			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
-				dbUser, dbPassword, existingPort, dbName)
+				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
 			port, err := utils.GetFreePort()
 			if err != nil {
@@ -181,13 +184,13 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			}
 
 			cfg := embeddedpostgres.DefaultConfig().
-				Username(dbUser).
-				Password(dbPassword).
-				Database(dbName).
+				Username(opts.dbUser).
+				Password(opts.dbPassword).
+				Database(opts.dbName).
 				Port(uint32(port)).
 				Version(embeddedpostgres.V18)
-			if embeddedOpts.dataPath != "" {
-				cfg = cfg.DataPath(embeddedOpts.dataPath)
+			if opts.dataPath != "" {
+				cfg = cfg.DataPath(opts.dataPath)
 			}
 
 			postgres := embeddedpostgres.NewDatabase(cfg)
@@ -206,7 +209,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			embeddedPGLock.Unlock()
 
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
-				dbUser, dbPassword, port, dbName)
+				opts.dbUser, opts.dbPassword, port, opts.dbName)
 			slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 		}
 	}
@@ -283,7 +286,10 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 // embeddedOptions holds options parsed from the query string of a
 // "postgres:embedded:" URL.
 type embeddedOptions struct {
-	dataPath string
+	dataPath   string
+	dbUser     string
+	dbPassword string
+	dbName     string
 }
 
 // parseEmbeddedOptions extracts options from query parameters appended to
@@ -308,6 +314,9 @@ func parseEmbeddedOptions(dbURL string) embeddedOptions {
 		return embeddedOptions{}
 	}
 	return embeddedOptions{
-		dataPath: q.Get("datapath"),
+		dataPath:   q.Get("datapath"),
+		dbUser:     q.Get("user"),
+		dbPassword: q.Get("password"),
+		dbName:     q.Get("name"),
 	}
 }

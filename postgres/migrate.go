@@ -57,9 +57,6 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 
 	// Set search_path so that atlas operates within the specified schema.
 	// The default is "public" (DBConfig.MigrationSchema).
-	if schema == "" {
-		schema = "public"
-	}
 	if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
 		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
 	}

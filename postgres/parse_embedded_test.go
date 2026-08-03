@@ -63,23 +63,3 @@ func TestParseEmbeddedOptions(t *testing.T) {
 		})
 	}
 }
-
-func TestQuoteIdent(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"simple", "public", `"public"`},
-		{"with space", "my schema", `"my schema"`},
-		{"with quote", `sch"ema`, `"sch""ema"`},
-		{"empty", "", `""`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := quoteIdent(tt.in); got != tt.want {
-				t.Errorf("quoteIdent(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
-}

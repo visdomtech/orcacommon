@@ -149,9 +149,6 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // If dbURL starts with "postgres:embedded:", it spins up an embedded Postgres instance automatically.
 // Query parameters after the prefix are parsed as options (e.g. "?datapath=/tmp/pgdata" sets the
 // Postgres data directory via Config.DataPath). Unrecognized parameters are ignored.
-// When an existing embedded Postgres is already running at the specified datapath
-// (detected via PID file and port probe), it is reused instead of starting a new instance.
-// The target database is created if it does not exist.
 // If dbURL starts with "postgres:tc:", it spins up a Testcontainer automatically.
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
@@ -185,7 +182,8 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if err := ensureDatabaseExists("127.0.0.1", existingPort, opts.dbUser, opts.dbPassword, opts.dbName); err != nil {
 				return nil, fmt.Errorf("ensure database %q exists: %w", opts.dbName, err)
 			}
-			dbURL = buildEmbeddedURL(opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
 			port, err := utils.GetFreePort()
 			if err != nil {
@@ -217,7 +215,8 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			embeddedPGs[key] = postgres
 			embeddedPGLock.Unlock()
 
-			dbURL = buildEmbeddedURL(opts.dbUser, opts.dbPassword, port, opts.dbName)
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				opts.dbUser, opts.dbPassword, port, opts.dbName)
 			slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 		}
 	}
@@ -277,17 +276,13 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		if embeddedPG != nil {
-			if stopErr := embeddedPG.Stop(); stopErr != nil {
-				slog.Warn("failed to stop embedded Postgres during rollback", "key", key, "error", stopErr)
-			}
+			_ = embeddedPG.Stop()
 			embeddedPGLock.Lock()
 			delete(embeddedPGs, key)
 			embeddedPGLock.Unlock()
 		}
 		if tcContainer != nil {
-			if termErr := tcContainer.Terminate(context.Background()); termErr != nil {
-				slog.Warn("failed to terminate testcontainer during rollback", "key", key, "error", termErr)
-			}
+			_ = tcContainer.Terminate(context.Background())
 		}
 		return nil, fmt.Errorf("open pool: %w", err)
 	}
@@ -304,19 +299,6 @@ type embeddedOptions struct {
 	dbName     string
 }
 
-// buildEmbeddedURL constructs a postgres:// connection URL with properly escaped
-// credentials, avoiding the injection risks of fmt.Sprintf-based URL construction.
-func buildEmbeddedURL(user, password string, port int, dbName string) string {
-	u := &url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword(user, password),
-		Host:     fmt.Sprintf("localhost:%d", port),
-		Path:     dbName,
-		RawQuery: "sslmode=disable",
-	}
-	return u.String()
-}
-
 // ensureDatabaseExists connects to the default "postgres" system database and
 // creates targetDB if it does not already exist. This is necessary when reusing
 // an existing embedded-postgres data directory, since the library only runs
@@ -325,14 +307,10 @@ func buildEmbeddedURL(user, password string, port int, dbName string) string {
 // Note: PostgreSQL does not allow parameterized database names in DDL, so we
 // use quoteIdent to safely escape the identifier.
 func ensureDatabaseExists(host string, port int, user, password, targetDB string) error {
-	u := &url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword(user, password),
-		Host:     fmt.Sprintf("%s:%d", host, port),
-		Path:     "postgres",
-		RawQuery: "sslmode=disable",
-	}
-	rootConnStr := u.String()
+	rootConnStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
+		host, port, user, password,
+	)
 
 	db, err := sql.Open("pgx", rootConnStr)
 	if err != nil {
@@ -351,8 +329,6 @@ func ensureDatabaseExists(host string, port int, user, password, targetDB string
 			return fmt.Errorf("create database %q: %w", targetDB, err)
 		}
 		slog.Info("created database on existing embedded postgres", "database", targetDB)
-	} else {
-		slog.Debug("database already exists on embedded postgres", "database", targetDB)
 	}
 	return nil
 }
@@ -363,9 +339,6 @@ func ensureDatabaseExists(host string, port int, user, password, targetDB string
 // Supported parameters:
 //
 //	datapath — Postgres data directory (maps to Config.DataPath)
-//	user     — database user (default "test")
-//	password — database password (default "test")
-//	name     — database name (default "test")
 func parseEmbeddedOptions(dbURL string) embeddedOptions {
 	const prefix = "postgres:embedded:"
 	i := strings.Index(dbURL, prefix)
@@ -381,14 +354,8 @@ func parseEmbeddedOptions(dbURL string) embeddedOptions {
 		slog.Warn("failed to parse embedded postgres query params", "error", err)
 		return embeddedOptions{}
 	}
-	dataPath := q.Get("datapath")
-	// Reject path traversal attempts in datapath.
-	if strings.Contains(dataPath, "..") {
-		slog.Warn("embedded postgres datapath contains '..'; ignoring", "datapath", dataPath)
-		dataPath = ""
-	}
 	return embeddedOptions{
-		dataPath:   dataPath,
+		dataPath:   q.Get("datapath"),
 		dbUser:     q.Get("user"),
 		dbPassword: q.Get("password"),
 		dbName:     q.Get("name"),

@@ -358,7 +358,6 @@ func (r *pgRevisions) scanRevision(s scanner) (*migrate.Revision, error) {
 // quoteIdent quotes a PostgreSQL identifier (schema/table name) to prevent SQL injection.
 // It doubles any embedded double-quotes and wraps the result in double-quotes.
 func quoteIdent(name string) string {
-	name = strings.ReplaceAll(name, "\x00", "")
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 

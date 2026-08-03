@@ -114,7 +114,8 @@ func ReadPostmasterPort(dataPath string) (int, error) {
 
 // IsEmbeddedPGRunning is a composite check that determines whether an embedded
 // PostgreSQL instance is already running at the given data directory and port.
-// It returns true only if the process is alive AND the port is accepting connections.
+// It combines data directory initialization, PID file liveness, and port checks.
+// Returns true only if the process is alive AND the port is accepting connections.
 func IsEmbeddedPGRunning(dataPath string) bool {
 	running, _ := ReuseEmbeddedPG(dataPath)
 	return running
@@ -129,55 +130,25 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 		return false, 0
 	}
 
-	pid, existingPort, err := readPostmasterInfo(dataPath)
+	_, alive, _, err := CheckPIDFile(dataPath)
 	if err != nil {
-		slog.Warn("error reading postmaster.pid", "dataPath", dataPath, "error", err)
+		slog.Warn("error checking PID file", "dataPath", dataPath, "error", err)
+		return false, 0
+	}
+	if !alive {
 		return false, 0
 	}
 
-	// os.FindProcess always succeeds on Unix; Signal(0) is the real liveness check.
-	process, findErr := os.FindProcess(pid)
-	if findErr != nil {
-		return false, 0
-	}
-	if sigErr := process.Signal(syscall.Signal(0)); sigErr != nil {
+	existingPort, err := ReadPostmasterPort(dataPath)
+	if err != nil {
+		slog.Warn("error reading port from postmaster.pid", "dataPath", dataPath, "error", err)
 		return false, 0
 	}
 
-	if !IsPortListening("127.0.0.1", existingPort, 200*time.Millisecond) {
+	if !IsPortListening("127.0.0.1", existingPort, 1*time.Second) {
 		slog.Warn("PID alive but port not responding", "dataPath", dataPath, "port", existingPort)
 		return false, 0
 	}
 
 	return true, existingPort
-}
-
-// readPostmasterInfo reads the PID (line 1) and port (line 4) from the
-// postmaster.pid file in a single file read, avoiding redundant I/O.
-func readPostmasterInfo(dataPath string) (pid int, port int, err error) {
-	pidPath := filepath.Join(dataPath, "postmaster.pid")
-	file, err := os.Open(pidPath)
-	if err != nil {
-		return 0, 0, fmt.Errorf("open postmaster.pid: %w", err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
-		switch line {
-		case 1:
-			pid, err = strconv.Atoi(text)
-			if err != nil {
-				return 0, 0, fmt.Errorf("parse PID from postmaster.pid line 1: %w", err)
-			}
-		case 4:
-			port, err = strconv.Atoi(text)
-			if err != nil {
-				return 0, 0, fmt.Errorf("parse port from postmaster.pid line 4: %w", err)
-			}
-			return pid, port, nil
-		}
-	}
-	return 0, 0, fmt.Errorf("postmaster.pid has fewer than 4 lines")
 }

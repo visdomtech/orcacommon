@@ -33,6 +33,14 @@ func (d DBConfig) ResolveURL() string {
 	return r.Replace(d.DatabaseURLTemplate)
 }
 
+func IsEmbeddedPostgres(dbURL string) bool {
+	return strings.Contains(dbURL, "postgres:embedded:")
+}
+
+func IsTestContainer(dbURL string) bool {
+	return strings.Contains(dbURL, "postgres:tc:")
+}
+
 // LogValue implements slog.LogValuer, redacting the password.
 func (d DBConfig) LogValue() slog.Value {
 	return slog.GroupValue(

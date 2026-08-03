@@ -155,7 +155,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	var embeddedPG *embeddedpostgres.EmbeddedPostgres
 	var tcContainer testcontainers.Container
 
-	if strings.Contains(dbURL, "postgres:embedded:") {
+	if IsEmbeddedPostgres(dbURL) {
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
 
 		// Parse optional query parameters appended after the prefix.
@@ -173,7 +173,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 
 		// Check if an embedded Postgres is already running at the data path.
 		// If so, reuse it instead of starting a new instance.
-		if running, existingPort := reuseEmbeddedPG(opts.dataPath); running {
+		if running, existingPort := utils.ReuseEmbeddedPG(opts.dataPath); running {
 			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
@@ -214,7 +214,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		}
 	}
 
-	if strings.Contains(dbURL, "postgres:tc:") {
+	if IsTestContainer(dbURL) {
 		slog.Info("'postgres:tc:' detected — provisioning a TestContainer")
 
 		left := strings.TrimPrefix(dbURL, "postgres:tc:")

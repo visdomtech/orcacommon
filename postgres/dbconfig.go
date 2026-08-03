@@ -16,6 +16,7 @@ type DBConfig struct {
 	Password            string `env:"PASSWORD"`
 	Name                string `env:"NAME"`
 	CloudSQLInstance    string `env:"CLOUD_SQL_INSTANCE"`
+	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:""`
 	DatabaseURLTemplate string `env:"URL_TEMPLATE" envDefault:"postgres:tc://[username]:[password]@[host]:[port]/[database_name]"`
 }
 
@@ -41,6 +42,7 @@ func (d DBConfig) LogValue() slog.Value {
 		slog.String("password", "[REDACTED]"),
 		slog.String("name", d.Name),
 		slog.String("cloud_sql_instance", d.CloudSQLInstance),
+		slog.String("migration_schema", d.MigrationSchema),
 		slog.String("url_template", d.DatabaseURLTemplate),
 	)
 }

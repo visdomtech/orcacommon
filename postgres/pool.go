@@ -78,7 +78,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 	if err != nil {
 		return nil, err
 	}
-	if err = runMigrations(ctx, pool, migrator, key); err != nil {
+	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
 		pool.Close()
 		return nil, err
 	}

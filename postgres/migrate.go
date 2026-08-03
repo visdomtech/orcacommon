@@ -47,13 +47,21 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 // file source. It acquires a PostgreSQL advisory lock to prevent concurrent
 // replicas from racing. Returns a non-nil error if any migration fails;
 // callers must not start the server in that case.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string) error {
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string) error {
 	if migrator == nil {
 		return nil
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
+
+	// If a custom schema is specified, set search_path so that atlas
+	// operates within that schema instead of the default "public".
+	if schema != "" {
+		if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
+			return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
+		}
+	}
 
 	driver, err := postgres.Open(sqlDB)
 	if err != nil {
@@ -347,6 +355,12 @@ func (r *pgRevisions) scanRevision(s scanner) (*migrate.Revision, error) {
 	rev.ExecutionTime = time.Duration(execTimeNanos)
 	rev.PartialHashes = partialHashes
 	return &rev, nil
+}
+
+// quoteIdent quotes a PostgreSQL identifier (schema/table name) to prevent SQL injection.
+// It doubles any embedded double-quotes and wraps the result in double-quotes.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // Ensure pgRevisions implements the interface at compile time.

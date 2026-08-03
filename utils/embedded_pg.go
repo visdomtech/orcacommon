@@ -4,7 +4,6 @@ package utils
 
 import (
 	"bufio"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"

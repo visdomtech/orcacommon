@@ -221,6 +221,60 @@ func TestIsPortListening(t *testing.T) {
 	})
 }
 
+func TestReadPostmasterPort(t *testing.T) {
+	t.Run("reads port from line 4", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidPath := filepath.Join(tmpDir, "postmaster.pid")
+		// Realistic postmaster.pid content: PID, datadir, timestamp, port, socket
+		content := fmt.Sprintf("%d\n%s\n1691000000\n5432\n/tmp\n", os.Getpid(), tmpDir)
+		if err := os.WriteFile(pidPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		port, err := ReadPostmasterPort(tmpDir)
+		if err != nil {
+			t.Fatalf("ReadPostmasterPort() error: %v", err)
+		}
+		if port != 5432 {
+			t.Errorf("ReadPostmasterPort() = %d, want 5432", port)
+		}
+	})
+
+	t.Run("returns error when file missing", func(t *testing.T) {
+		_, err := ReadPostmasterPort("/nonexistent/path")
+		if err == nil {
+			t.Error("ReadPostmasterPort() expected error for missing file")
+		}
+	})
+
+	t.Run("returns error when file has fewer than 4 lines", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidPath := filepath.Join(tmpDir, "postmaster.pid")
+		if err := os.WriteFile(pidPath, []byte("12345\n/data\n1691000000\n"), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		_, err := ReadPostmasterPort(tmpDir)
+		if err == nil {
+			t.Error("ReadPostmasterPort() expected error for short file")
+		}
+	})
+
+	t.Run("returns error when port is not a number", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidPath := filepath.Join(tmpDir, "postmaster.pid")
+		content := "12345\n/data\n1691000000\nnot_a_port\n/tmp\n"
+		if err := os.WriteFile(pidPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		_, err := ReadPostmasterPort(tmpDir)
+		if err == nil {
+			t.Error("ReadPostmasterPort() expected error for invalid port")
+		}
+	})
+}
+
 func TestIsEmbeddedPGRunning(t *testing.T) {
 	t.Run("returns false when data path not initialized", func(t *testing.T) {
 		tmpDir := t.TempDir()

@@ -168,39 +168,47 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		// e.g. "postgres:embedded:?datapath=/tmp/pgdata"
 		embeddedOpts := parseEmbeddedOptions(dbURL)
 
-		port, err := utils.GetFreePort()
-		if err != nil {
-			return nil, fmt.Errorf("get free port: %w", err)
+		// Check if an embedded Postgres is already running at the data path.
+		// If so, reuse it instead of starting a new instance.
+		if running, existingPort := reuseEmbeddedPG(embeddedOpts.dataPath); running {
+			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", embeddedOpts.dataPath, "port", existingPort)
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				dbUser, dbPassword, existingPort, dbName)
+		} else {
+			port, err := utils.GetFreePort()
+			if err != nil {
+				return nil, fmt.Errorf("get free port: %w", err)
+			}
+
+			cfg := embeddedpostgres.DefaultConfig().
+				Username(dbUser).
+				Password(dbPassword).
+				Database(dbName).
+				Port(uint32(port)).
+				Version(embeddedpostgres.V18)
+			if embeddedOpts.dataPath != "" {
+				cfg = cfg.DataPath(embeddedOpts.dataPath)
+			}
+
+			postgres := embeddedpostgres.NewDatabase(cfg)
+
+			if err := postgres.Start(); err != nil {
+				return nil, fmt.Errorf("start embedded postgres: %w", err)
+			}
+			embeddedPG = postgres
+
+			embeddedPGLock.Lock()
+			if old, ok := embeddedPGs[key]; ok {
+				slog.Warn("replacing existing embedded Postgres entry", "key", key)
+				_ = old.Stop()
+			}
+			embeddedPGs[key] = postgres
+			embeddedPGLock.Unlock()
+
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				dbUser, dbPassword, port, dbName)
+			slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 		}
-
-		cfg := embeddedpostgres.DefaultConfig().
-			Username(dbUser).
-			Password(dbPassword).
-			Database(dbName).
-			Port(uint32(port)).
-			Version(embeddedpostgres.V18)
-		if embeddedOpts.dataPath != "" {
-			cfg = cfg.DataPath(embeddedOpts.dataPath)
-		}
-
-		postgres := embeddedpostgres.NewDatabase(cfg)
-
-		if err := postgres.Start(); err != nil {
-			return nil, fmt.Errorf("start embedded postgres: %w", err)
-		}
-		embeddedPG = postgres
-
-		embeddedPGLock.Lock()
-		if old, ok := embeddedPGs[key]; ok {
-			slog.Warn("replacing existing embedded Postgres entry", "key", key)
-			_ = old.Stop()
-		}
-		embeddedPGs[key] = postgres
-		embeddedPGLock.Unlock()
-
-		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
-			dbUser, dbPassword, port, dbName)
-		slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 	}
 
 	if strings.Contains(dbURL, "postgres:tc:") {

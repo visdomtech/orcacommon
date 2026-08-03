@@ -73,13 +73,42 @@ func CheckPIDFile(dataPath string) (exists bool, alive bool, pid int, err error)
 // IsPortListening checks if a TCP port is accepting connections on the given host.
 // Returns true if a connection can be established within the specified timeout.
 func IsPortListening(host string, port int, timeout time.Duration) bool {
-	address := fmt.Sprintf("%s:%d", host, port)
+	address := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
 		return false
 	}
 	_ = conn.Close()
 	return true
+}
+
+// ReadPostmasterPort reads the TCP port number from line 4 of the postmaster.pid
+// file in the given data directory. The postmaster.pid format is:
+//
+//	Line 1: PID
+//	Line 2: data directory path
+//	Line 3: timestamp
+//	Line 4: port number
+//	Line 5: Unix socket directory
+func ReadPostmasterPort(dataPath string) (int, error) {
+	pidPath := filepath.Join(dataPath, "postmaster.pid")
+	file, err := os.Open(pidPath)
+	if err != nil {
+		return 0, fmt.Errorf("open postmaster.pid: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for line := 1; scanner.Scan(); line++ {
+		if line == 4 {
+			port, err := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+			if err != nil {
+				return 0, fmt.Errorf("parse port from postmaster.pid line 4: %w", err)
+			}
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("postmaster.pid has fewer than 4 lines")
 }
 
 // IsEmbeddedPGRunning is a composite check that determines whether an embedded

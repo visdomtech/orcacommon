@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"cloud.google.com/go/cloudsqlconn"
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver for database/sql
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/visdomtech/orcacommon/utils"
@@ -78,7 +80,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 	if err != nil {
 		return nil, err
 	}
-	if err = runMigrations(ctx, pool, migrator, key); err != nil {
+	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -155,55 +157,72 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	var embeddedPG *embeddedpostgres.EmbeddedPostgres
 	var tcContainer testcontainers.Container
 
-	if strings.Contains(dbURL, "postgres:embedded:") {
+	if IsEmbeddedPostgres(dbURL) {
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
-
-		const (
-			dbUser     = "test"
-			dbPassword = "test"
-			dbName     = "test"
-		)
 
 		// Parse optional query parameters appended after the prefix.
 		// e.g. "postgres:embedded:?datapath=/tmp/pgdata"
-		embeddedOpts := parseEmbeddedOptions(dbURL)
-
-		port, err := utils.GetFreePort()
-		if err != nil {
-			return nil, fmt.Errorf("get free port: %w", err)
+		opts := parseEmbeddedOptions(dbURL)
+		if opts.dbUser == "" {
+			opts.dbUser = "test"
+		}
+		if opts.dbPassword == "" {
+			opts.dbPassword = "test"
+		}
+		if opts.dbName == "" {
+			opts.dbName = "test"
 		}
 
-		cfg := embeddedpostgres.DefaultConfig().
-			Username(dbUser).
-			Password(dbPassword).
-			Database(dbName).
-			Port(uint32(port)).
-			Version(embeddedpostgres.V18)
-		if embeddedOpts.dataPath != "" {
-			cfg = cfg.DataPath(embeddedOpts.dataPath)
+		// Check if an embedded Postgres is already running at the data path.
+		// If so, reuse it instead of starting a new instance.
+		if running, existingPort := utils.ReuseEmbeddedPG(opts.dataPath); running {
+			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
+			// When reusing an existing data directory, the target database may not
+			// exist (embedded-postgres only creates it during initial initdb).
+			// Connect to the system "postgres" database to ensure it exists.
+			if err := ensureDatabaseExists("127.0.0.1", existingPort, opts.dbUser, opts.dbPassword, opts.dbName); err != nil {
+				return nil, fmt.Errorf("ensure database %q exists: %w", opts.dbName, err)
+			}
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
+		} else {
+			port, err := utils.GetFreePort()
+			if err != nil {
+				return nil, fmt.Errorf("get free port: %w", err)
+			}
+
+			cfg := embeddedpostgres.DefaultConfig().
+				Username(opts.dbUser).
+				Password(opts.dbPassword).
+				Database(opts.dbName).
+				Port(uint32(port)).
+				Version(embeddedpostgres.V18)
+			if opts.dataPath != "" {
+				cfg = cfg.DataPath(opts.dataPath)
+			}
+
+			postgres := embeddedpostgres.NewDatabase(cfg)
+
+			if err := postgres.Start(); err != nil {
+				return nil, fmt.Errorf("start embedded postgres: %w", err)
+			}
+			embeddedPG = postgres
+
+			embeddedPGLock.Lock()
+			if old, ok := embeddedPGs[key]; ok {
+				slog.Warn("replacing existing embedded Postgres entry", "key", key)
+				_ = old.Stop()
+			}
+			embeddedPGs[key] = postgres
+			embeddedPGLock.Unlock()
+
+			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
+				opts.dbUser, opts.dbPassword, port, opts.dbName)
+			slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 		}
-
-		postgres := embeddedpostgres.NewDatabase(cfg)
-
-		if err := postgres.Start(); err != nil {
-			return nil, fmt.Errorf("start embedded postgres: %w", err)
-		}
-		embeddedPG = postgres
-
-		embeddedPGLock.Lock()
-		if old, ok := embeddedPGs[key]; ok {
-			slog.Warn("replacing existing embedded Postgres entry", "key", key)
-			_ = old.Stop()
-		}
-		embeddedPGs[key] = postgres
-		embeddedPGLock.Unlock()
-
-		dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
-			dbUser, dbPassword, port, dbName)
-		slog.Info("Embedded Postgres provisioned", "key", key, "port", port)
 	}
 
-	if strings.Contains(dbURL, "postgres:tc:") {
+	if IsTestContainer(dbURL) {
 		slog.Info("'postgres:tc:' detected — provisioning a TestContainer")
 
 		left := strings.TrimPrefix(dbURL, "postgres:tc:")
@@ -275,7 +294,50 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 // embeddedOptions holds options parsed from the query string of a
 // "postgres:embedded:" URL.
 type embeddedOptions struct {
-	dataPath string
+	dataPath   string
+	dbUser     string
+	dbPassword string
+	dbName     string
+}
+
+// ensureDatabaseExists connects to the default "postgres" system database and
+// creates targetDB if it does not already exist. This is necessary when reusing
+// an existing embedded-postgres data directory, since the library only runs
+// createdb during initial initdb.
+//
+// Note: PostgreSQL does not allow parameterized database names in DDL, so we
+// use quoteIdent to safely escape the identifier.
+func ensureDatabaseExists(host string, port int, user, password, targetDB string) error {
+	rootConnStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
+		host, port, dsnQuote(user), dsnQuote(password),
+	)
+
+	db, err := sql.Open("pgx", rootConnStr)
+	if err != nil {
+		return fmt.Errorf("connect to root postgres db: %w", err)
+	}
+	defer db.Close()
+
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", targetDB).Scan(&exists); err != nil {
+		return fmt.Errorf("query pg_database: %w", err)
+	}
+
+	if !exists {
+		createSQL := "CREATE DATABASE " + quoteIdent(targetDB)
+		if _, err := db.Exec(createSQL); err != nil {
+			return fmt.Errorf("create database %q: %w", targetDB, err)
+		}
+		slog.Info("created database on existing embedded postgres", "database", targetDB)
+	}
+	return nil
+}
+
+// dsnQuote wraps a value in single quotes for use in a PostgreSQL key-value
+// connection string, escaping embedded single-quotes and backslashes.
+func dsnQuote(v string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'"
 }
 
 // parseEmbeddedOptions extracts options from query parameters appended to
@@ -300,6 +362,9 @@ func parseEmbeddedOptions(dbURL string) embeddedOptions {
 		return embeddedOptions{}
 	}
 	return embeddedOptions{
-		dataPath: q.Get("datapath"),
+		dataPath:   q.Get("datapath"),
+		dbUser:     q.Get("user"),
+		dbPassword: q.Get("password"),
+		dbName:     q.Get("name"),
 	}
 }

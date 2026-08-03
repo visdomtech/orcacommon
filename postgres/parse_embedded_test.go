@@ -10,6 +10,9 @@ func TestParseEmbeddedOptions(t *testing.T) {
 		name         string
 		dbURL        string
 		wantDataPath string
+		wantDBUser   string
+		wantDBPass   string
+		wantDBName   string
 	}{
 		{
 			name:         "no query string",
@@ -51,6 +54,29 @@ func TestParseEmbeddedOptions(t *testing.T) {
 			dbURL:        "postgres:embedded:?datapath=",
 			wantDataPath: "",
 		},
+		{
+			name:         "all fields set",
+			dbURL:        "postgres:embedded:?datapath=/tmp/pg&user=alice&password=secret&name=mydb",
+			wantDataPath: "/tmp/pg",
+			wantDBUser:   "alice",
+			wantDBPass:   "secret",
+			wantDBName:   "mydb",
+		},
+		{
+			name:       "only user set",
+			dbURL:      "postgres:embedded:?user=bob",
+			wantDBUser: "bob",
+		},
+		{
+			name:       "only password set",
+			dbURL:      "postgres:embedded:?password=p%40ss",
+			wantDBPass: "p@ss",
+		},
+		{
+			name:       "only name set",
+			dbURL:      "postgres:embedded:?name=testdb",
+			wantDBName: "testdb",
+		},
 	}
 
 	for _, tt := range tests {
@@ -59,6 +85,18 @@ func TestParseEmbeddedOptions(t *testing.T) {
 			if got.dataPath != tt.wantDataPath {
 				t.Errorf("parseEmbeddedOptions(%q).dataPath = %q, want %q",
 					tt.dbURL, got.dataPath, tt.wantDataPath)
+			}
+			if got.dbUser != tt.wantDBUser {
+				t.Errorf("parseEmbeddedOptions(%q).dbUser = %q, want %q",
+					tt.dbURL, got.dbUser, tt.wantDBUser)
+			}
+			if got.dbPassword != tt.wantDBPass {
+				t.Errorf("parseEmbeddedOptions(%q).dbPassword = %q, want %q",
+					tt.dbURL, got.dbPassword, tt.wantDBPass)
+			}
+			if got.dbName != tt.wantDBName {
+				t.Errorf("parseEmbeddedOptions(%q).dbName = %q, want %q",
+					tt.dbURL, got.dbName, tt.wantDBName)
 			}
 		})
 	}

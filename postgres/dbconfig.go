@@ -16,6 +16,11 @@ type DBConfig struct {
 	Password            string `env:"PASSWORD"`
 	Name                string `env:"NAME"`
 	CloudSQLInstance    string `env:"CLOUD_SQL_INSTANCE"`
+	// MigrationSchema sets the PostgreSQL search_path for atlas migrations.
+	// Switching from the default "public" to another schema creates a new
+	// atlas_schema_revisions table in that schema; existing migration history
+	// in "public" is not carried over.
+	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:"public"`
 	DatabaseURLTemplate string `env:"URL_TEMPLATE" envDefault:"postgres:tc://[username]:[password]@[host]:[port]/[database_name]"`
 }
 
@@ -32,6 +37,16 @@ func (d DBConfig) ResolveURL() string {
 	return r.Replace(d.DatabaseURLTemplate)
 }
 
+// IsEmbeddedPostgres reports whether dbURL starts with the "postgres:embedded:" prefix.
+func IsEmbeddedPostgres(dbURL string) bool {
+	return strings.HasPrefix(dbURL, "postgres:embedded:")
+}
+
+// IsTestContainer reports whether dbURL starts with the "postgres:tc:" prefix.
+func IsTestContainer(dbURL string) bool {
+	return strings.HasPrefix(dbURL, "postgres:tc:")
+}
+
 // LogValue implements slog.LogValuer, redacting the password.
 func (d DBConfig) LogValue() slog.Value {
 	return slog.GroupValue(
@@ -41,6 +56,7 @@ func (d DBConfig) LogValue() slog.Value {
 		slog.String("password", "[REDACTED]"),
 		slog.String("name", d.Name),
 		slog.String("cloud_sql_instance", d.CloudSQLInstance),
+		slog.String("migration_schema", d.MigrationSchema),
 		slog.String("url_template", d.DatabaseURLTemplate),
 	)
 }

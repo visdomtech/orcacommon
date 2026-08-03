@@ -310,7 +310,7 @@ type embeddedOptions struct {
 func ensureDatabaseExists(host string, port int, user, password, targetDB string) error {
 	rootConnStr := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=postgres sslmode=disable",
-		host, port, user, password,
+		host, port, dsnQuote(user), dsnQuote(password),
 	)
 
 	db, err := sql.Open("pgx", rootConnStr)
@@ -332,6 +332,12 @@ func ensureDatabaseExists(host string, port int, user, password, targetDB string
 		slog.Info("created database on existing embedded postgres", "database", targetDB)
 	}
 	return nil
+}
+
+// dsnQuote wraps a value in single quotes for use in a PostgreSQL key-value
+// connection string, escaping embedded single-quotes and backslashes.
+func dsnQuote(v string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'"
 }
 
 // parseEmbeddedOptions extracts options from query parameters appended to

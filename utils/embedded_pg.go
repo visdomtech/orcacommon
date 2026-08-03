@@ -4,6 +4,7 @@ package utils
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -138,7 +139,9 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 
 	pid, existingPort, err := parsePostmasterInfo(dataPath)
 	if err != nil {
-		slog.Warn("error reading postmaster.pid", "dataPath", dataPath, "error", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("error reading postmaster.pid", "dataPath", dataPath, "error", err)
+		}
 		return false, 0
 	}
 

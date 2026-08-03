@@ -297,3 +297,79 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 		}
 	})
 }
+
+func TestReuseEmbeddedPG(t *testing.T) {
+	t.Run("returns false for empty dataPath", func(t *testing.T) {
+		running, port := ReuseEmbeddedPG("")
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG(\"\") = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns false when no PID file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG() = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns true when PID alive and port listening", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("net.Listen: %v", err)
+		}
+		defer listener.Close()
+		listenPort := listener.Addr().(*net.TCPAddr).Port
+
+		content := fmt.Sprintf("%d\n%s\n1691000000\n%d\n/tmp\n", os.Getpid(), tmpDir, listenPort)
+		if err := os.WriteFile(filepath.Join(tmpDir, "postmaster.pid"), []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if !running {
+			t.Error("ReuseEmbeddedPG() = false, want true")
+		}
+		if port != listenPort {
+			t.Errorf("port = %d, want %d", port, listenPort)
+		}
+	})
+
+	t.Run("returns false when PID line is not a number", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := "not_a_pid\n/data\n1691000000\n5432\n/tmp\n"
+		if err := os.WriteFile(filepath.Join(tmpDir, "postmaster.pid"), []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG() = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns false when port line is not a number", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := fmt.Sprintf("%d\n%s\n1691000000\nnot_a_port\n/tmp\n", os.Getpid(), tmpDir)
+		if err := os.WriteFile(filepath.Join(tmpDir, "postmaster.pid"), []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG() = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+
+	t.Run("returns false when file has fewer than 4 lines", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		content := fmt.Sprintf("%d\n%s\n1691000000\n", os.Getpid(), tmpDir)
+		if err := os.WriteFile(filepath.Join(tmpDir, "postmaster.pid"), []byte(content), 0644); err != nil {
+			t.Fatalf("write postmaster.pid: %v", err)
+		}
+		running, port := ReuseEmbeddedPG(tmpDir)
+		if running || port != 0 {
+			t.Errorf("ReuseEmbeddedPG() = (%v, %d), want (false, 0)", running, port)
+		}
+	})
+}

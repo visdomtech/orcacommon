@@ -16,6 +16,10 @@ type DBConfig struct {
 	Password            string `env:"PASSWORD"`
 	Name                string `env:"NAME"`
 	CloudSQLInstance    string `env:"CLOUD_SQL_INSTANCE"`
+	// MigrationSchema sets the PostgreSQL search_path for atlas migrations.
+	// Switching from the default "public" to another schema creates a new
+	// atlas_schema_revisions table in that schema; existing migration history
+	// in "public" is not carried over.
 	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:"public"`
 	DatabaseURLTemplate string `env:"URL_TEMPLATE" envDefault:"postgres:tc://[username]:[password]@[host]:[port]/[database_name]"`
 }

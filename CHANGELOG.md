@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/visdomtech/orcacommon/compare/v0.3.3...v0.4.0) (2026-08-03)
+
+
+### Features
+
+* add embedded postgres status check utilities ([#10](https://github.com/visdomtech/orcacommon/issues/10)) ([f0acdcd](https://github.com/visdomtech/orcacommon/commit/f0acdcd4ac2e95109c192e7ca9c5ee49f0c027dd))
+
 ## [0.3.3](https://github.com/visdomtech/orcacommon/compare/v0.3.2...v0.3.3) (2026-07-27)
 
 

@@ -1,3 +1,5 @@
+//go:build !windows
+
 package utils
 
 import (
@@ -14,47 +16,63 @@ import (
 
 // IsDataPathInitialized checks if a PostgreSQL data directory has been initialized
 // by verifying the existence of the PG_VERSION file created by initdb.
-func IsDataPathInitialized(dataPath string) bool {
+// Returns true if PG_VERSION exists, false if it does not exist.
+// Returns an error for I/O or permission issues (distinct from "not initialized").
+func IsDataPathInitialized(dataPath string) (bool, error) {
 	pgVersionPath := filepath.Join(dataPath, "PG_VERSION")
 	_, err := os.Stat(pgVersionPath)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // CheckPIDFile reads the postmaster.pid file in the given data directory and
 // determines whether the PostgreSQL process is still running.
 // Returns:
-//   - exists: true if the postmaster.pid file exists
+//   - exists: true if the postmaster.pid file exists (even if unreadable)
 //   - alive: true if the process referenced by the PID is currently running
 //   - pid: the process ID from the file, or 0 if the file doesn't exist or is invalid
-func CheckPIDFile(dataPath string) (exists bool, alive bool, pid int) {
+//   - err: non-nil for unexpected I/O errors (permission denied, etc.)
+//
+// Note: os.FindProcess always succeeds on Unix; the Signal(0) probe is the
+// actual liveness check. On Windows, this file is excluded via build constraint.
+func CheckPIDFile(dataPath string) (exists bool, alive bool, pid int, err error) {
 	pidPath := filepath.Join(dataPath, "postmaster.pid")
 	file, err := os.Open(pidPath)
 	if err != nil {
-		return false, false, 0
+		if os.IsNotExist(err) {
+			return false, false, 0, nil
+		}
+		return true, false, 0, err
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	if scanner.Scan() {
 		pidStr := strings.TrimSpace(scanner.Text())
-		parsedPID, err := strconv.Atoi(pidStr)
-		if err == nil {
-			process, err := os.FindProcess(parsedPID)
-			if err == nil {
+		parsedPID, parseErr := strconv.Atoi(pidStr)
+		if parseErr == nil {
+			process, findErr := os.FindProcess(parsedPID)
+			// os.FindProcess always succeeds on Unix; check findErr for portability
+			if findErr == nil {
 				// Signal 0 tests process existence without killing it (POSIX)
-				if err := process.Signal(syscall.Signal(0)); err == nil {
-					return true, true, parsedPID
+				if sigErr := process.Signal(syscall.Signal(0)); sigErr == nil {
+					return true, true, parsedPID, nil
 				}
 			}
-			return true, false, parsedPID
+			return true, false, parsedPID, nil
 		}
 	}
-	return true, false, 0
+	return true, false, 0, nil
 }
 
 // IsPortListening checks if a TCP port is accepting connections on the given host.
 // Returns true if a connection can be established within the specified timeout.
-func IsPortListening(host string, port uint32, timeout time.Duration) bool {
+func IsPortListening(host string, port int, timeout time.Duration) bool {
 	address := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
@@ -62,4 +80,22 @@ func IsPortListening(host string, port uint32, timeout time.Duration) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// IsEmbeddedPGRunning is a composite check that determines whether an embedded
+// PostgreSQL instance is already running at the given data directory and port.
+// It combines data directory initialization, PID file liveness, and port checks.
+// Returns true only if the process is alive AND the port is accepting connections.
+func IsEmbeddedPGRunning(dataPath string, host string, port int) bool {
+	initialized, _ := IsDataPathInitialized(dataPath)
+	if !initialized {
+		return false
+	}
+
+	_, alive, _, _ := CheckPIDFile(dataPath)
+	if !alive {
+		return false
+	}
+
+	return IsPortListening(host, port, 1*time.Second)
 }

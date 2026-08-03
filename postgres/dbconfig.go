@@ -16,7 +16,7 @@ type DBConfig struct {
 	Password            string `env:"PASSWORD"`
 	Name                string `env:"NAME"`
 	CloudSQLInstance    string `env:"CLOUD_SQL_INSTANCE"`
-	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:""`
+	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:"public"`
 	DatabaseURLTemplate string `env:"URL_TEMPLATE" envDefault:"postgres:tc://[username]:[password]@[host]:[port]/[database_name]"`
 }
 

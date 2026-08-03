@@ -55,12 +55,10 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
 
-	// If a custom schema is specified, set search_path so that atlas
-	// operates within that schema instead of the default "public".
-	if schema != "" {
-		if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
-			return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
-		}
+	// Set search_path so that atlas operates within the specified schema.
+	// The default is "public" (DBConfig.MigrationSchema).
+	if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
+		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
 	}
 
 	driver, err := postgres.Open(sqlDB)

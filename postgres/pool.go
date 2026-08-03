@@ -17,6 +17,7 @@ import (
 	"cloud.google.com/go/cloudsqlconn"
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" driver for database/sql
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"github.com/visdomtech/orcacommon/utils"

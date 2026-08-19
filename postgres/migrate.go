@@ -84,7 +84,10 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 	// Ask the caller-supplied predicate whether this run should only set a
 	// baseline (mark the first migration as already applied without executing
 	// its SQL). A nil IsBaseline disables baseline handling entirely.
-	var allOpts []migrate.ExecutorOption
+	allOpts := []migrate.ExecutorOption{
+		migrate.WithExecOrder(migrate.ExecOrderNonLinear),
+	}
+
 	if migrator.IsBaseline != nil && migrator.IsBaseline(ctx, pool) {
 		files, ferr := dir.Files()
 		if ferr != nil {

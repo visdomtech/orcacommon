@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/visdomtech/orcacommon/compare/v0.4.0...v0.4.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* allow out of order migration by set migrate.ExecOrderNonLinear ([88f6c7f](https://github.com/visdomtech/orcacommon/commit/88f6c7fbf16102535a11a1b35ff9614dee0ed964))
+
 ## [0.4.0](https://github.com/visdomtech/orcacommon/compare/v0.3.3...v0.4.0) (2026-08-03)
 
 

@@ -26,9 +26,15 @@ Request → Server.ServeRoot()
 ## Components
 
 ### `Server` (`serve.go`)
-Entry point. Routes requests to static-file or SPA-index paths. Applies security headers (`Cache-Control: no-store`, `X-Frame-Options`, `Referrer-Policy`, `X-Content-Type-Options`, CSP). Owns the version-keyed `indexCache` (capacity 10, arbitrary eviction — not LRU) and `singleflight.Group` for CDN fetches.
+Entry point. Routes requests to static-file or SPA-index paths. Applies security headers (`Cache-Control: no-store, max-age=0`, `X-Frame-Options`, `Referrer-Policy`, `X-Content-Type-Options`, CSP). Owns the version-keyed `indexCache` (capacity 10, arbitrary eviction — not LRU) and `singleflight.Group` for CDN fetches.
 
 Public methods: `ServeRoot(w, r)`, `RefreshVersion(ctx)`, `Manager() *Manager`, `FlushCache()`. `FlushCache` fully clears the index cache and is auto-called via `Manager.OnChange` after a version update — consumers should expect a cold-cache fetch on the next request after a version change.
+
+Constructor: `NewServer(ctx, pool, cfg)`. `pool` is used for the DB-backed version provider; it is ignored when `CDNVersion` or `EmbeddedContent` is set (a nil pool is safe in those modes).
+
+Response headers set on index.html responses: `X-app-version` (resolved version), `X-fe-version-cache` (set on cache hit), `X-fe-version-url` (set on CDN fetch, contains the resolved CDN URL). On fatal errors (index.html unavailable), returns a plain-text fallback body.
+
+> **Embedded mode caveat:** `resolveEmbedded` validates that `index.html` exists at the FS root. If missing, a warning is logged and the server silently falls back to CDN mode — use `fs.Sub` to re-root a subdirectory if needed.
 
 ### `Manager` (`version.go`)
 Owns frontend version resolution via a `versionProvider` interface:
@@ -58,6 +64,8 @@ Serves an allow-list of static files. Paths support exact matches, single-segmen
 Builds the `Content-Security-Policy` header from `CSPConfig` allow-lists. Falls back to built-in defaults. Per-request nonce is appended to `style-src`. Nonce generated from `crypto/rand` (alphanumeric, length 12).
 
 `CSPConfig` also supports `Disable` (omit CSP header entirely) and `DisableAppendNonce` (omit per-request nonce from style-src).
+
+Exported CSP wildcard source lists are available for consumers to use in `CSPConfig` overrides: `ScriptSrcAll`, `StyleSrcAll`, `ConnectSrcAll`, `FontSrcAll`, `ManifestSrcAll`.
 
 > **SPA build contract:** The frontend build must emit `nonce="NONCE"` placeholders in inline style/script tags. The server replaces exactly the first occurrence per request with the generated nonce.
 

@@ -13,7 +13,7 @@ Pure utility functions with no internal orchestration or state management. Each 
 **JSON-based:**
 - `StructToMap[T](*T)` — serializes a json-tagged struct pointer to `map[string]any` via `json.Marshal`/`Unmarshal`.
 - `MapToStruct[T](map[string]any)` — deserializes a map back into a typed struct pointer.
-- `PrettyJSON(v)` — indented JSON for debugging.
+- `PrettyJSON(v)` — indented JSON for debugging. Returns `json.RawMessage` (raw bytes, not a string).
 
 **Reflection-based (`StructToMapLC`):**
 - Converts PascalCase field names to camelCase.
@@ -27,18 +27,18 @@ Pure utility functions with no internal orchestration or state management. Each 
 
 ### Network Helpers (`network.go`)
 - `IsFromLocalhost(req)` — checks `RemoteAddr` against `127.0.0.1` / `::1`.
-- `WriteJSONResponse(w, status, v)` — sets `Content-Type` and writes JSON.
+- `WriteJSONResponse(w, status, v)` — sets `Content-Type` and writes JSON. Returns `error` (from `json.NewEncoder.Encode`).
 - `RequestHost(req)` — returns `X-Forwarded-Host` or `req.Host`.
 - `GetFreePort()` — allocates an unused TCP port on `127.0.0.1` (small race window in high-contention).
 
 ### Embedded Postgres Probes (`embedded_pg.go`, `embedded_pg_windows.go`)
 Unix-only (build constraint `!windows`). Windows has no-op stubs — all probes return zero values; `ReadPostmasterPort` additionally returns an error (`"not supported on windows"`).
 
-- `IsDataPathInitialized(dataPath)` — checks for `PG_VERSION` file.
-- `CheckPIDFile(dataPath)` — reads `postmaster.pid`, probes process liveness via `Signal(0)`.
+- `IsDataPathInitialized(dataPath)` — checks for `PG_VERSION` file. Returns `(bool, error)` — error is non-nil for I/O or permission issues, distinct from "not initialized".
+- `CheckPIDFile(dataPath)` — reads `postmaster.pid`, probes process liveness via `Signal(0)`. Returns `(exists, alive, pid, err)` — `exists` vs `alive` distinction matters (file can exist but process dead).
 - `IsPortListening(host, port, timeout)` — TCP dial check.
 - `ReadPostmasterPort(dataPath)` — reads port from line 4 of `postmaster.pid`.
-- `ReuseEmbeddedPG(dataPath)` — composite check: PID alive AND port listening → `(true, port)`.
+- `ReuseEmbeddedPG(dataPath)` — composite check: PID alive AND port listening → `(running, port)`.
 - `IsEmbeddedPGRunning(dataPath)` — convenience wrapper around `ReuseEmbeddedPG`.
 
 ### Split-Level slog Handler (`slog_handler.go`)

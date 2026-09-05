@@ -10,7 +10,7 @@ Shared Mailgun-backed email sender for transactional email delivery. Zero extern
 - **`MailgunClient`** — concrete implementation wrapping the Mailgun HTTP API.
 - **`EmailMessage`** — `From`, `To`, `CC`, `BCC`, `Subject`, `Text`, `HTML`, `Attachments`.
 - **`Attachment`** — `Filename`, `ContentType`, `Data` (raw bytes), `Inline` (inline vs regular attachment). Max 10 MB each.
-- **`MailgunConfig`** — `Endpoint`, `User`, `Password`, `From`. Implements `slog.LogValuer` (password redacted).
+- **`MailgunConfig`** — `Endpoint`, `User`, `Password`, `From`. `From` has an `envDefault:"noti@doublefin.com"` tag (application-specific default — consumers should override via env or per-message). Implements `slog.LogValuer` (password redacted).
 
 ### Responsibilities
 
@@ -60,3 +60,4 @@ Requires the following environment variables in the consuming service:
 - 30-second request timeout
 - Connection pooling (10 max idle connections, 5 per host)
 - 10-second dial/TLS handshake timeouts
+- Trailing slash automatically stripped from `Endpoint` URL

@@ -1,0 +1,76 @@
+# PostgreSQL Utilities
+
+Connection pool management, Atlas-based migration runner, Cloud SQL connector, embedded Postgres provisioning, and TestContainer support. Provides a single `OpenPool` entry point that handles the full lifecycle: connect → migrate → return pool.
+
+## Architecture
+
+```
+OpenPool(ctx, dbcfg, migrator)
+    │
+    ├── CloudSQLInstance set → openCloudSQL() (cloudsqlconn dialer)
+    │
+    └── Connect(ctx, dbcfg.ResolveURL(), key)
+         │
+         ├── "postgres:embedded:" prefix
+         │    └── Provision embedded Postgres (fergusstrange/embedded-postgres)
+         │         ├── Reuse existing instance (check PID file + port liveness)
+         │         └── Or start new instance on a free port
+         │
+         ├── "postgres:tc:" prefix
+         │    └── Provision TestContainer (postgres Docker image)
+         │
+         └── Standard postgres:// URL → pgxpool.New()
+    │
+    └── runMigrations(ctx, pool, migrator)
+         ├── Set search_path to MigrationSchema (default: "public")
+         ├── Acquire PostgreSQL advisory lock (key: 773492011, 30s timeout)
+         ├── Load migration files from embed.FS into Atlas MemDir
+         │    └── Duplicate version prefix detection (clear error)
+         ├── pgRevisions (custom RevisionReadWriter backed by atlas_schema_revisions)
+         ├── Optional baseline (IsBaseline predicate → mark first migration as applied)
+         └── Execute pending migrations (non-linear order)
+```
+
+## Components
+
+### `DBConfig` (`dbconfig.go`)
+Database connection parameters with `env` struct tags (prefix `DB_`). `ResolveURL()` expands a URL template with credential placeholders. `IsEmbeddedPostgres()` and `IsTestContainer()` detect special connection modes. Implements `slog.LogValuer` (password redacted).
+
+### `OpenPool` / `OpenPoolWithKey` (`pool.go`)
+Process-wide singleton pool (or keyed pools for multi-database setups). Double-checked locking on a global map. Pool creation flow: connect → migrate → cache. On migration failure, the pool is closed and the error propagated.
+
+### `Connect` (`pool.go`)
+Low-level connection function. Detects three special URL prefixes:
+- **`postgres:embedded:`** — starts an embedded Postgres instance. Query params: `?datapath=`, `?user=`, `?password=`, `?name=`. Reuses existing instances by checking PID file liveness + port.
+- **`postgres:tc:`** — starts a TestContainer. Optional image tag: `postgres:tc:16` → `postgres:16`.
+- **Standard URL** — connects directly via `pgxpool.New`.
+
+### `Migrator` / `runMigrations` (`migrate.go`)
+Atlas-based migration runner:
+- **`Migrator`** — bundles `fs.FS` (migration files) with a caller-supplied `IsBaseline` predicate.
+- **Advisory lock** — `pg_try_advisory_lock(773492011)` with 500ms polling, 30s max wait.
+- **`pgRevisions`** — custom `RevisionReadWriter` backed by `atlas_schema_revisions` table (auto-created).
+- **`embedDir`** — loads `fs.FS` into an Atlas `MemDir`, detects duplicate version prefixes.
+- **Baseline** — when `IsBaseline` returns true, the first migration is recorded without executing SQL.
+
+### Graceful Shutdown (`pool.go`)
+`init()` launches `gracefulShutdown()` goroutine. On SIGTERM/SIGINT:
+1. Close all keyed pools (drain connections).
+2. Stop all embedded Postgres instances.
+
+## Configuration
+
+| Env Var (with `DB_` prefix) | Default | Description |
+|---|---|---|
+| `HOST` | `localhost` | PostgreSQL host |
+| `PORT` | `5432` | PostgreSQL port |
+| `USER` | — | PostgreSQL username |
+| `PASSWORD` | — | PostgreSQL password |
+| `NAME` | — | Database name |
+| `CLOUD_SQL_INSTANCE` | — | Cloud SQL instance (`project:region:instance`) |
+| `MIGRATION_SCHEMA` | `public` | PostgreSQL search_path for migrations |
+| `URL_TEMPLATE` | `postgres:tc://[username]:[password]@[host]:[port]/[database_name]` | Connection URL template |
+
+### Special URL prefixes
+- `postgres:embedded:?datapath=/tmp/pgdata&user=test&password=test&name=mydb`
+- `postgres:tc:16` (TestContainer with postgres:16 image)

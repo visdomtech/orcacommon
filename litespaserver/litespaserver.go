@@ -3,6 +3,12 @@
 // static files) from a CDN, injects a per-request CSP nonce, and serves the
 // result. It is a generic, reusable module with no dependency on any specific
 // application's configuration package.
+//
+// # Prerequisites
+//
+// Unless EmbeddedContent is used (which bypasses the database entirely),
+// consumers must create the "litespa_settings" table before calling NewServer.
+// See dao.go for the required DDL.
 package litespaserver
 
 import "io/fs"

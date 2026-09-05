@@ -16,10 +16,13 @@ const settingVersionKey = "frontend.version"
 // key-value table. The table must exist before the dao is used; consumers
 // should create it via their own migration. Required schema:
 //
-//	CREATE TABLE IF NOT EXISTS litespa_settings (
-//	    id         TEXT PRIMARY KEY,
-//	    value      TEXT NOT NULL,
-//	    updated_on TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+//	-- litespa_settings: stores frontend version state for litespaserver.
+//	-- The litespaserver module in orcacommon reads/writes the served version
+//	-- under this table name.
+//	CREATE TABLE "litespa_settings" (
+//	  "id"         TEXT PRIMARY KEY,
+//	  "value"      TEXT NOT NULL,
+//	  "updated_on" TIMESTAMPTZ NOT NULL DEFAULT now()
 //	);
 type dao struct {
 	pool *pgxpool.Pool

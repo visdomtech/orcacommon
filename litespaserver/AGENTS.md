@@ -26,7 +26,9 @@ Request → Server.ServeRoot()
 ## Components
 
 ### `Server` (`serve.go`)
-Entry point. Routes requests to static-file or SPA-index paths. Applies security headers (`Cache-Control: no-store`, `X-Frame-Options`, `Referrer-Policy`, `X-Content-Type-Options`, CSP). Owns the version-keyed `indexCache` and `singleflight.Group` for CDN fetches.
+Entry point. Routes requests to static-file or SPA-index paths. Applies security headers (`Cache-Control: no-store`, `X-Frame-Options`, `Referrer-Policy`, `X-Content-Type-Options`, CSP). Owns the version-keyed `indexCache` (capacity 10, arbitrary eviction — not LRU) and `singleflight.Group` for CDN fetches.
+
+Public methods: `ServeRoot(w, r)`, `RefreshVersion(ctx)`, `Manager() *Manager`, `FlushCache()`. `FlushCache` fully clears the index cache and is auto-called via `Manager.OnChange` after a version update — consumers should expect a cold-cache fetch on the next request after a version change.
 
 ### `Manager` (`version.go`)
 Owns frontend version resolution via a `versionProvider` interface:
@@ -50,12 +52,14 @@ The consuming service must create this table via their own migration.
 Fetches `{cdn}/{version}/index.html` from the CDN. Validates: 2xx status AND response body contains the CDN prefix (guards against CDN error pages returning 200).
 
 ### `staticRetriever` (`static.go`)
-Serves an allow-list of static files. Paths support exact matches, single-segment globs (`/assets/*`), and recursive globs (`/assets/**`) via `doublestar`. Bounded in-memory cache (capacity 16), singleflight-guarded CDN fetches.
+Serves an allow-list of static files. Paths support exact matches, single-segment globs (`/assets/*`), and recursive globs (`/assets/**`) via `doublestar`. Bounded in-memory cache (capacity 16, arbitrary eviction when at capacity), singleflight-guarded CDN fetches.
 
 ### CSP (`csp.go`)
-Builds the `Content-Security-Policy` header from `CSPConfig` allow-lists. Falls back to built-in defaults matching the doublefin SPA. Per-request nonce is appended to `style-src`. Nonce generated from `crypto/rand` (alphanumeric, length 12).
+Builds the `Content-Security-Policy` header from `CSPConfig` allow-lists. Falls back to built-in defaults. Per-request nonce is appended to `style-src`. Nonce generated from `crypto/rand` (alphanumeric, length 12).
 
 `CSPConfig` also supports `Disable` (omit CSP header entirely) and `DisableAppendNonce` (omit per-request nonce from style-src).
+
+> **SPA build contract:** The frontend build must emit `nonce="NONCE"` placeholders in inline style/script tags. The server replaces exactly the first occurrence per request with the generated nonce.
 
 ## Configuration
 

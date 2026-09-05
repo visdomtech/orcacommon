@@ -39,17 +39,17 @@ OpenPool(ctx, dbcfg, migrator)
 Database connection parameters with `env` struct tags (prefix `DB_`). `ResolveURL()` expands a URL template with credential placeholders. `IsEmbeddedPostgres()` and `IsTestContainer()` detect special connection modes. Implements `slog.LogValuer` (password redacted).
 
 ### `OpenPool` / `OpenPoolWithKey` (`pool.go`)
-Process-wide singleton pool (or keyed pools for multi-database setups). Double-checked locking on a global map. Pool creation flow: connect → migrate → cache. On migration failure, the pool is closed and the error propagated.
+Process-wide singleton pool (or keyed pools for multi-database setups). Double-checked locking on a global map. Pool creation flow via `createPool`: connect → migrate → cache on success. On migration failure, the pool is closed and the error propagated — the pool is **not** cached (all-or-nothing). Uses pgxpool defaults (MaxConns = `runtime.NumCPU()`); consumers needing custom pool sizing should configure `pgxpool.Config` directly.
 
 ### `Connect` (`pool.go`)
 Low-level connection function. Detects three special URL prefixes:
-- **`postgres:embedded:`** — starts an embedded Postgres instance. Query params: `?datapath=`, `?user=`, `?password=`, `?name=`. Reuses existing instances by checking PID file liveness + port.
+- **`postgres:embedded:`** — starts an embedded Postgres instance. Query params: `?datapath=`, `?user=`, `?password=`, `?name=`. Reuses existing instances by checking PID file liveness + port. When reusing, `ensureDatabaseExists` creates the target database if absent (embedded-postgres only runs `createdb` during initial `initdb`).
 - **`postgres:tc:`** — starts a TestContainer (default image: `postgres:17.5`). Optional image tag: `postgres:tc:16` → `postgres:16`.
 - **Standard URL** — connects directly via `pgxpool.New`.
 
 ### `Migrator` / `runMigrations` (`migrate.go`)
 Atlas-based migration runner:
-- **`Migrator`** — bundles `fs.FS` (migration files) with a caller-supplied `IsBaseline` predicate.
+- **`Migrator`** — bundles `fs.FS` (migration files) with a caller-supplied `IsBaseline` predicate. Constructed via `NewMigrator(migrationFiles fs.FS, isBaseline func(ctx, pool) bool)`. A nil `isBaseline` disables baseline detection.
 - **Advisory lock** — `pg_try_advisory_lock(773492011)` with 500ms polling, 30s max wait.
 - **`pgRevisions`** — custom `RevisionReadWriter` backed by `atlas_schema_revisions` table (auto-created).
 - **`embedDir`** — loads `fs.FS` into an Atlas `MemDir`, detects duplicate version prefixes.

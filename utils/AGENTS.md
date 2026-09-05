@@ -2,6 +2,10 @@
 
 General-purpose helpers: struct↔map conversion (JSON-based and reflection-based), HTTP/network utilities, embedded Postgres process probes, and a split-level slog handler.
 
+## Architecture
+
+Pure utility functions with no internal orchestration or state management. Each file is independent — no cross-file coordination within the package. The embedded Postgres probes (`embedded_pg.go`) use POSIX signals and are excluded on Windows via build constraints; `embedded_pg_windows.go` provides no-op stubs.
+
 ## Components
 
 ### Struct↔Map Conversion (`convert.go`)
@@ -28,7 +32,7 @@ General-purpose helpers: struct↔map conversion (JSON-based and reflection-base
 - `GetFreePort()` — allocates an unused TCP port on `127.0.0.1` (small race window in high-contention).
 
 ### Embedded Postgres Probes (`embedded_pg.go`, `embedded_pg_windows.go`)
-Unix-only (build constraint `!windows`). Windows has no-op stubs.
+Unix-only (build constraint `!windows`). Windows has no-op stubs — all probes return zero values; `ReadPostmasterPort` additionally returns an error (`"not supported on windows"`).
 
 - `IsDataPathInitialized(dataPath)` — checks for `PG_VERSION` file.
 - `CheckPIDFile(dataPath)` — reads `postmaster.pid`, probes process liveness via `Signal(0)`.
@@ -39,3 +43,9 @@ Unix-only (build constraint `!windows`). Windows has no-op stubs.
 
 ### Split-Level slog Handler (`slog_handler.go`)
 `SplitLevelHandler` routes log records to stdout (below `Error`) and stderr (`Error` and above). Implements `slog.Handler` interface. Composes two child handlers (`StdHandler`, `ErrHandler`).
+
+> **Note:** `SplitLevelHandler` currently has no dedicated test coverage. Add tests when modifying.
+
+## Configuration
+
+N/A — pure utility functions, no configuration required.

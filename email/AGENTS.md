@@ -2,7 +2,17 @@
 
 Shared Mailgun-backed email sender for transactional email delivery. Zero external dependencies beyond the Go standard library.
 
-## Responsibilities
+## Components
+
+### Types (`mailgun.go`)
+
+- **`Sender`** — interface: `Send(ctx, *EmailMessage) (string, error)`. Enables mock injection in tests.
+- **`MailgunClient`** — concrete implementation wrapping the Mailgun HTTP API.
+- **`EmailMessage`** — `From`, `To`, `CC`, `BCC`, `Subject`, `Text`, `HTML`, `Attachments`.
+- **`Attachment`** — `Filename`, `ContentType`, `Data` (raw bytes), `Inline` (inline vs regular attachment). Max 10 MB each.
+- **`MailgunConfig`** — `Endpoint`, `User`, `Password`, `From`. Implements `slog.LogValuer` (password redacted).
+
+### Responsibilities
 
 - Provide a `Sender` interface for email sending (enables mock injection in tests)
 - Wrap the Mailgun HTTP API with input validation, error handling, and connection pooling

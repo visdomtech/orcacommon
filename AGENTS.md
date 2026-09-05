@@ -60,13 +60,18 @@ All packages are stateless libraries consumed by downstream services. The only p
 ### 3. Configuration Convention
 * Struct tags follow the [caarlos0/env](https://github.com/caarlos0/env) convention (`env:"FIELD_NAME"`).
 * Consuming services are responsible for parsing env vars; this library does not auto-read them.
-* All config structs implement `slog.LogValuer` to redact secrets (passwords, API keys).
+* All config structs implement `slog.LogValuer` to redact secrets — currently `DBConfig` (password) and `MailgunConfig` (password). Redact by replacing the value with `"[REDACTED]"`.
 
 ### 4. Graceful Shutdown
 * `postgres.init()` registers a process-wide SIGTERM/SIGINT handler that closes all connection pools and stops embedded Postgres instances.
 * Do not register additional signal handlers that conflict with this.
 
-### 5. Migration Safety
+### 5. Logging Conventions
+* Use `slog` with structured key-value pairs (never `fmt.Print` / `log.Print`).
+* Log only lifecycle events (pool open/close, migration applied, signal received) at Info. Use Debug for diagnostics, Error for unrecoverable failures.
+* Use `utils.SplitLevelHandler` as the root slog handler in consuming services — it routes Info/Debug/Warn to stdout and Error+ to stderr, enabling cloud log routers to separate streams.
+
+### 6. Migration Safety
 * Atlas migrations use a PostgreSQL advisory lock (`773492011`) to serialise across replicas.
 * Migration files are embedded via `//go:embed` and loaded into an Atlas `MemDir`.
 * Duplicate migration version prefixes are detected early with a clear error.

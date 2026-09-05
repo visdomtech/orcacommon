@@ -19,6 +19,8 @@ orcacommon/
 
 All packages are stateless libraries consumed by downstream services. The only process-level side effect is `postgres.init()`, which registers a SIGTERM/SIGINT handler for graceful pool and embedded-PG shutdown.
 
+> **Internal dependency:** `postgres/` imports `utils/` (for embedded-PG probes and `GetFreePort`). All other packages are independent.
+
 ---
 
 ## Sub-Module Architecture & Directory Guides
@@ -46,7 +48,9 @@ All packages are stateless libraries consumed by downstream services. The only p
 ### 1. Build and Test
 * The entire module must compile cleanly (`go build ./...`) before committing.
 * Run tests with the race detector: `go test -race ./...`.
-* Integration tests in `postgres/` require Docker (TestContainers) or an embedded Postgres binary.
+* **Unit tests:** pure Go, no external deps — `go test -race ./...`
+* **Integration tests:** `postgres/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./postgres/...` (requires Docker for TestContainers)
+* **Platform-guarded tests:** `utils/embedded_pg_test.go` is excluded on Windows via `//go:build !windows`
 
 ### 2. Dependency Discipline
 * Keep the dependency tree lean. New external dependencies must be justified.

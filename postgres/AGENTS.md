@@ -23,11 +23,13 @@ OpenPool(ctx, dbcfg, migrator)
     │
     └── runMigrations(ctx, pool, migrator)
          ├── Set search_path to MigrationSchema (default: "public")
-         ├── Acquire PostgreSQL advisory lock (key: 773492011, 30s timeout)
+         ├── Open Atlas postgres driver
          ├── Load migration files from embed.FS into Atlas MemDir
          │    └── Duplicate version prefix detection (clear error)
+         ├── Acquire PostgreSQL advisory lock (key: 773492011, 30s timeout)
          ├── pgRevisions (custom RevisionReadWriter backed by atlas_schema_revisions)
          ├── Optional baseline (IsBaseline predicate → mark first migration as applied)
+         │    └── Non-baseline path: WithAllowDirty(true)
          └── Execute pending migrations (non-linear order)
 ```
 
@@ -42,7 +44,7 @@ Process-wide singleton pool (or keyed pools for multi-database setups). Double-c
 ### `Connect` (`pool.go`)
 Low-level connection function. Detects three special URL prefixes:
 - **`postgres:embedded:`** — starts an embedded Postgres instance. Query params: `?datapath=`, `?user=`, `?password=`, `?name=`. Reuses existing instances by checking PID file liveness + port.
-- **`postgres:tc:`** — starts a TestContainer. Optional image tag: `postgres:tc:16` → `postgres:16`.
+- **`postgres:tc:`** — starts a TestContainer (default image: `postgres:17.5`). Optional image tag: `postgres:tc:16` → `postgres:16`.
 - **Standard URL** — connects directly via `pgxpool.New`.
 
 ### `Migrator` / `runMigrations` (`migrate.go`)
@@ -72,5 +74,5 @@ Atlas-based migration runner:
 | `URL_TEMPLATE` | `postgres:tc://[username]:[password]@[host]:[port]/[database_name]` | Connection URL template |
 
 ### Special URL prefixes
-- `postgres:embedded:?datapath=/tmp/pgdata&user=test&password=test&name=mydb`
-- `postgres:tc:16` (TestContainer with postgres:16 image)
+- `postgres:embedded:?datapath=/tmp/pgdata&user=dev&password=dev_only&name=mydb` (local dev only — never use weak credentials for real data)
+- `postgres:tc:` (TestContainer, default `postgres:17.5`), `postgres:tc:16` (override to `postgres:16`)

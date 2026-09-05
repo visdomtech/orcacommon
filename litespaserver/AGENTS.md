@@ -13,7 +13,8 @@ Request → Server.ServeRoot()
     │    ├── Embedded FS mode → serve from fs.FS
     │    └── CDN mode → staticRetriever.retrieve() (singleflight, bounded cache)
     │
-    └── SPA route (no extension or non-static)
+    └── SPA route (no file extension)
+         │    (has extension but not static → 404 with base headers)
          ├── Generate per-request CSP nonce (crypto/rand)
          ├── Embedded FS mode → read index.html from fs.FS
          └── CDN mode
@@ -53,6 +54,8 @@ Serves an allow-list of static files. Paths support exact matches, single-segmen
 
 ### CSP (`csp.go`)
 Builds the `Content-Security-Policy` header from `CSPConfig` allow-lists. Falls back to built-in defaults matching the doublefin SPA. Per-request nonce is appended to `style-src`. Nonce generated from `crypto/rand` (alphanumeric, length 12).
+
+`CSPConfig` also supports `Disable` (omit CSP header entirely) and `DisableAppendNonce` (omit per-request nonce from style-src).
 
 ## Configuration
 

@@ -93,9 +93,10 @@ type Manager struct {
 // defaultVersion is seeded into the DB if absent and a DB-backed provider is
 // used. cdn is the CDN prefix used to validate candidate versions.
 // When embedded is true, a static provider with version "embedded" is used,
-// bypassing the DB entirely.
-func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaultVersion string, embedded bool) *Manager {
-	d := &dao{pool: pool}
+// bypassing the DB entirely. frontendName namespaces the version key in the
+// litespa_settings table so multiple SPAs can share the same database.
+func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaultVersion string, embedded bool, frontendName string) *Manager {
+	d := &dao{pool: pool, key: versionKey(frontendName)}
 	m := &Manager{
 		cdn:     cdn,
 		dao:     d,

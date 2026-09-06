@@ -44,6 +44,12 @@ type Config struct {
 	// re-root a subdirectory of an embed.FS. The Manager uses a static
 	// provider so the database is never touched. Used for local development.
 	EmbeddedContent fs.FS
+
+	// FrontendName namespaces the version key in the litespa_settings table
+	// so multiple SPAs can share the same database. When empty (default),
+	// the key is "frontend.version". When non-empty, the key becomes
+	// "frontend.version.<FrontendName>".
+	FrontendName string
 }
 
 // CSPConfig parameterises the Content-Security-Policy source allow-lists.

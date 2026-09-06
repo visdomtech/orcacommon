@@ -26,6 +26,17 @@ const settingVersionKey = "frontend.version"
 //	);
 type dao struct {
 	pool *pgxpool.Pool
+	key  string // resolved version key (settingVersionKey or settingVersionKey + "." + frontendName)
+}
+
+// versionKey returns the litespa_settings row key for the frontend version.
+// When frontendName is empty, it returns the default key. Otherwise it
+// appends the name as a dot-separated suffix.
+func versionKey(frontendName string) string {
+	if frontendName == "" {
+		return settingVersionKey
+	}
+	return settingVersionKey + "." + frontendName
 }
 
 // getVersion returns the stored frontend version. It returns ("", nil) when no
@@ -34,7 +45,7 @@ func (d *dao) getVersion(ctx context.Context) (string, error) {
 	var version string
 	err := d.pool.QueryRow(ctx,
 		`SELECT value FROM litespa_settings WHERE id = $1`,
-		settingVersionKey,
+		d.key,
 	).Scan(&version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
@@ -52,7 +63,7 @@ func (d *dao) setVersion(ctx context.Context, version string) error {
 		 VALUES ($1, $2, CURRENT_TIMESTAMP)
 		 ON CONFLICT (id)
 		 DO UPDATE SET value = $2, updated_on = CURRENT_TIMESTAMP`,
-		settingVersionKey, version,
+		d.key, version,
 	)
 	return err
 }

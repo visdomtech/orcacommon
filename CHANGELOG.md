@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/visdomtech/orcacommon/compare/v0.4.1...v0.5.0) (2026-09-06)
+
+
+### Features
+
+* **litespaserver:** add FrontendName for multi-version support ([#14](https://github.com/visdomtech/orcacommon/issues/14)) ([a4ad4df](https://github.com/visdomtech/orcacommon/commit/a4ad4df5ec3800f8eab51f2766670eb3c6a5c3f0))
+
 ## [0.4.1](https://github.com/visdomtech/orcacommon/compare/v0.4.0...v0.4.1) (2026-08-19)
 
 

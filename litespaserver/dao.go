@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -31,13 +32,23 @@ type dao struct {
 	key  string // resolved version key (settingVersionKey or settingVersionKey + "." + frontendName)
 }
 
+// validFrontendName restricts FrontendName to safe key-segment characters.
+// Dots are allowed (for hierarchical names like "app.dashboard") but
+// leading/trailing dots and consecutive dots are rejected to prevent
+// ambiguous keys.
+var validFrontendName = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
 // versionKey returns the litespa_settings row key for the frontend version.
 // When frontendName is empty (or whitespace-only), it returns the default key.
 // Otherwise it appends the trimmed name as a dot-separated suffix.
+// Panics if frontendName contains invalid characters or produces ambiguous keys.
 func versionKey(frontendName string) string {
 	frontendName = strings.TrimSpace(frontendName)
 	if frontendName == "" {
 		return settingVersionKey
+	}
+	if !validFrontendName.MatchString(frontendName) || strings.Contains(frontendName, "..") || strings.HasPrefix(frontendName, ".") || strings.HasSuffix(frontendName, ".") {
+		panic(fmt.Sprintf("litespaserver: FrontendName %q is invalid (allowed: [a-zA-Z0-9_.-], no leading/trailing/consecutive dots)", frontendName))
 	}
 	return settingVersionKey + "." + frontendName
 }

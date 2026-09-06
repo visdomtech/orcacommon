@@ -42,6 +42,30 @@ func TestDaoKeyField(t *testing.T) {
 	}
 }
 
+func TestVersionKeyRejectsInvalidNames(t *testing.T) {
+	invalid := []struct {
+		name         string
+		frontendName string
+	}{
+		{"spaces in name", "admin panel"},
+		{"leading dot", ".admin"},
+		{"trailing dot", "admin."},
+		{"consecutive dots", "app..dashboard"},
+		{"special characters", "admin;drop"},
+		{"semicolon", "foo;bar"},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("versionKey(%q) did not panic, want panic", tt.frontendName)
+				}
+			}()
+			versionKey(tt.frontendName)
+		})
+	}
+}
+
 func TestNewManagerWiresFrontendName(t *testing.T) {
 	// Verify that NewManager correctly threads FrontendName from Config
 	// into dao.key. Use CDNVersion to avoid DB access.
@@ -63,7 +87,7 @@ func TestNewManagerWiresFrontendName(t *testing.T) {
 				CDNVersion:   "v1.0.0", // locks version, no DB needed
 				FrontendName: tt.frontendName,
 			}
-			m := NewManager(ctx, nil, cfg)
+			m := NewManager(ctx, nil, cfg, nil)
 			if m.dao.key != tt.wantKey {
 				t.Errorf("Manager.dao.key = %q, want %q", m.dao.key, tt.wantKey)
 			}

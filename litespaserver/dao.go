@@ -3,6 +3,8 @@ package litespaserver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,9 +32,10 @@ type dao struct {
 }
 
 // versionKey returns the litespa_settings row key for the frontend version.
-// When frontendName is empty, it returns the default key. Otherwise it
-// appends the name as a dot-separated suffix.
+// When frontendName is empty (or whitespace-only), it returns the default key.
+// Otherwise it appends the trimmed name as a dot-separated suffix.
 func versionKey(frontendName string) string {
+	frontendName = strings.TrimSpace(frontendName)
 	if frontendName == "" {
 		return settingVersionKey
 	}
@@ -51,7 +54,7 @@ func (d *dao) getVersion(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getVersion(%q): %w", d.key, err)
 	}
 	return version, nil
 }
@@ -65,5 +68,8 @@ func (d *dao) setVersion(ctx context.Context, version string) error {
 		 DO UPDATE SET value = $2, updated_on = CURRENT_TIMESTAMP`,
 		d.key, version,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("setVersion(%q): %w", d.key, err)
+	}
+	return nil
 }

@@ -51,7 +51,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 		cdn:        cfg.CDNPrefix,
 		embedded:   embedded,
 		csp:        cfg.CSP,
-		manager:    NewManager(ctx, pool, cfg.CDNPrefix, cfg.CDNVersion, cfg.DefaultVersion, embedded != nil, cfg.FrontendName),
+		manager:    NewManager(ctx, pool, cfg),
 		static:     newStaticRetriever(nil, cfg.StaticPaths),
 		fetcher:    newFetcher(nil),
 		indexCache: make(map[string]string),

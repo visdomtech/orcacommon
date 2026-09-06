@@ -67,7 +67,7 @@ func (p *dbProvider) refresh(ctx context.Context) {
 func (p *dbProvider) reload(ctx context.Context, fallback string) string {
 	v, err := p.dao.getVersion(ctx)
 	if err != nil {
-		slog.WarnContext(ctx, "litespaserver: reload version from db failed, using cached", "err", err)
+		slog.WarnContext(ctx, "litespaserver: reload version from db failed, using cached", "key", p.dao.key, "err", err)
 		return fallback
 	}
 	p.mu.Lock()
@@ -88,34 +88,39 @@ type Manager struct {
 	listeners []func()
 }
 
-// NewManager builds a Manager. When cdnVersion is non-empty the version is
-// locked to it (static provider) and the DB is not touched; otherwise the
-// defaultVersion is seeded into the DB if absent and a DB-backed provider is
-// used. cdn is the CDN prefix used to validate candidate versions.
-// When embedded is true, a static provider with version "embedded" is used,
-// bypassing the DB entirely. frontendName namespaces the version key in the
-// litespa_settings table so multiple SPAs can share the same database.
-func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaultVersion string, embedded bool, frontendName string) *Manager {
-	d := &dao{pool: pool, key: versionKey(frontendName)}
+// NewManager builds a Manager from the provided Config. When cfg.CDNVersion
+// is non-empty the version is locked to it (static provider) and the DB is
+// not touched; otherwise cfg.DefaultVersion is seeded into the DB if absent
+// and a DB-backed provider is used. cfg.CDNPrefix is the CDN prefix used to
+// validate candidate versions. When cfg.EmbeddedContent is non-nil (and
+// contains index.html), a static provider with version "embedded" is used,
+// bypassing the DB entirely. cfg.FrontendName namespaces the version key in
+// the litespa_settings table so multiple SPAs can share the same database.
+func NewManager(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Manager {
+	embedded := resolveEmbedded(cfg.EmbeddedContent)
+	d := &dao{pool: pool, key: versionKey(cfg.FrontendName)}
+	if cfg.FrontendName != "" {
+		slog.InfoContext(ctx, "litespaserver: version key namespaced", "key", d.key, "frontendName", cfg.FrontendName)
+	}
 	m := &Manager{
-		cdn:     cdn,
+		cdn:     cfg.CDNPrefix,
 		dao:     d,
 		fetcher: newFetcher(nil),
 	}
 
-	if embedded {
-		slog.InfoContext(ctx, "litespaserver: embedded content mode, version locked to 'embedded'")
+	if embedded != nil {
+		slog.InfoContext(ctx, "litespaserver: embedded content mode", "version", "embedded", "key", d.key)
 		m.provider = &staticProvider{v: "embedded"}
 		return m
 	}
 
-	if cdnVersion != "" {
-		slog.WarnContext(ctx, "litespaserver: version locked by configuration, DB value ignored", "version", cdnVersion)
-		m.provider = &staticProvider{v: cdnVersion}
+	if cfg.CDNVersion != "" {
+		slog.WarnContext(ctx, "litespaserver: version locked by configuration, DB value ignored", "version", cfg.CDNVersion)
+		m.provider = &staticProvider{v: cfg.CDNVersion}
 		return m
 	}
 
-	m.seedDefaultIfAbsent(ctx, defaultVersion)
+	m.seedDefaultIfAbsent(ctx, cfg.DefaultVersion)
 	m.provider = &dbProvider{dao: d}
 	return m
 }
@@ -125,13 +130,13 @@ func NewManager(ctx context.Context, pool *pgxpool.Pool, cdn, cdnVersion, defaul
 func (m *Manager) seedDefaultIfAbsent(ctx context.Context, defaultVersion string) {
 	v, err := m.dao.getVersion(ctx)
 	if err != nil {
-		slog.WarnContext(ctx, "litespaserver: check existing version failed", "err", err)
+		slog.WarnContext(ctx, "litespaserver: check existing version failed", "key", m.dao.key, "err", err)
 		return
 	}
 	if v == "" && defaultVersion != "" {
-		slog.InfoContext(ctx, "litespaserver: version missing in DB, seeding default", "version", defaultVersion)
+		slog.InfoContext(ctx, "litespaserver: version missing in DB, seeding default", "key", m.dao.key, "version", defaultVersion)
 		if err := m.dao.setVersion(ctx, defaultVersion); err != nil {
-			slog.WarnContext(ctx, "litespaserver: seed default version failed", "err", err)
+			slog.WarnContext(ctx, "litespaserver: seed default version failed", "key", m.dao.key, "err", err)
 		}
 	}
 }
@@ -154,10 +159,10 @@ func (m *Manager) SetVersion(ctx context.Context, candidate string) bool {
 		return false
 	}
 	if err := m.dao.setVersion(ctx, candidate); err != nil {
-		slog.WarnContext(ctx, "litespaserver: persist new version failed", "version", candidate, "err", err)
+		slog.WarnContext(ctx, "litespaserver: persist new version failed", "key", m.dao.key, "version", candidate, "err", err)
 		return false
 	}
-	slog.InfoContext(ctx, "litespaserver: persisted new version", "version", candidate)
+	slog.InfoContext(ctx, "litespaserver: persisted new version", "key", m.dao.key, "version", candidate)
 	m.provider.refresh(ctx)
 	m.notifyListeners()
 	return true

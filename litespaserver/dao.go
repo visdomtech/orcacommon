@@ -3,6 +3,9 @@ package litespaserver
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +29,28 @@ const settingVersionKey = "frontend.version"
 //	);
 type dao struct {
 	pool *pgxpool.Pool
+	key  string // resolved version key (settingVersionKey or settingVersionKey + "." + frontendName)
+}
+
+// validFrontendName restricts FrontendName to safe key-segment characters.
+// Dots are allowed (for hierarchical names like "app.dashboard") but
+// leading/trailing dots and consecutive dots are rejected to prevent
+// ambiguous keys.
+var validFrontendName = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+
+// versionKey returns the litespa_settings row key for the frontend version.
+// When frontendName is empty (or whitespace-only), it returns the default key.
+// Otherwise it appends the trimmed name as a dot-separated suffix.
+// Panics if frontendName contains invalid characters or produces ambiguous keys.
+func versionKey(frontendName string) string {
+	frontendName = strings.TrimSpace(frontendName)
+	if frontendName == "" {
+		return settingVersionKey
+	}
+	if !validFrontendName.MatchString(frontendName) || strings.Contains(frontendName, "..") || strings.HasPrefix(frontendName, ".") || strings.HasSuffix(frontendName, ".") {
+		panic(fmt.Sprintf("litespaserver: FrontendName %q is invalid (allowed: [a-zA-Z0-9_.-], no leading/trailing/consecutive dots)", frontendName))
+	}
+	return settingVersionKey + "." + frontendName
 }
 
 // getVersion returns the stored frontend version. It returns ("", nil) when no
@@ -34,13 +59,13 @@ func (d *dao) getVersion(ctx context.Context) (string, error) {
 	var version string
 	err := d.pool.QueryRow(ctx,
 		`SELECT value FROM litespa_settings WHERE id = $1`,
-		settingVersionKey,
+		d.key,
 	).Scan(&version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getVersion(%q): %w", d.key, err)
 	}
 	return version, nil
 }
@@ -52,7 +77,10 @@ func (d *dao) setVersion(ctx context.Context, version string) error {
 		 VALUES ($1, $2, CURRENT_TIMESTAMP)
 		 ON CONFLICT (id)
 		 DO UPDATE SET value = $2, updated_on = CURRENT_TIMESTAMP`,
-		settingVersionKey, version,
+		d.key, version,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("setVersion(%q): %w", d.key, err)
+	}
+	return nil
 }

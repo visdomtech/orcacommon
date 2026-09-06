@@ -71,6 +71,7 @@ litespaserver.Config{
     DefaultVersion:  "v1.0.0",                       // seeded into DB if absent
     CSP:             litespaserver.CSPConfig{...},   // optional CSP overrides
     EmbeddedContent: embeddedFS,                     // fs.FS for local dev (bypasses CDN + DB)
+    FrontendName:    "admin",                        // namespaces version key for multi-SPA
 }
 ```
 
@@ -78,6 +79,8 @@ litespaserver.Config{
 1. `EmbeddedContent` non-nil → version locked to `"embedded"`, DB never touched.
 2. `CDNVersion` non-empty → version locked, DB never touched.
 3. Otherwise → `dbProvider` reads from `litespa_settings` table, seeded with `DefaultVersion` if absent.
+
+`FrontendName` namespaces the `litespa_settings` row key so multiple SPAs can share one database. Empty = `frontend.version`; non-empty = `frontend.version.<FrontendName>`.
 
 ## Prerequisites
 

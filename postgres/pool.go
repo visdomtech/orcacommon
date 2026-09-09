@@ -249,7 +249,7 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 
 // sendPostgresSIGTERM reads the PID from the postmaster.pid file and sends
 // SIGTERM directly to the Postgres process. This initiates a graceful
-// Postgres shutdown (equivalent to pg_ctl stop -m fast) without going
+// Postgres shutdown (equivalent to pg_ctl stop -m smart) without going
 // through the pg_ctl subprocess, which can hang. When called before
 // pg.Stop(), it ensures Postgres is already shutting down by the time
 // pg_ctl runs, making pg.Stop() return quickly.

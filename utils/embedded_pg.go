@@ -173,8 +173,11 @@ var ErrNotPostgresProcess = errors.New("pid is not a postgres process")
 // it to terminate. This is a last-resort fallback used when pg_ctl stop fails
 // or times out during graceful shutdown. Before sending the signal, it
 // verifies the target process is a Postgres process to avoid killing an
-// unrelated process that may have reused the PID. Returns ErrNotPostgresProcess
-// when the PID does not appear to be a Postgres process.
+// unrelated process that may have reused the PID.
+//
+// Returns ErrNotPostgresProcess when the target PID is dead or does not appear
+// to be a Postgres process (callers should treat this as "nothing to kill").
+// Use errors.Is to distinguish from other kill failures.
 func KillEmbeddedPG(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid: %d", pid)
@@ -233,8 +236,12 @@ func IsPostgresProcess(pid int) bool {
 		// not a postgres process (nothing to kill).
 		return false
 	}
-	comm := strings.TrimSpace(string(out))
-	return strings.Contains(strings.ToLower(comm), "postgres")
+	// Use filepath.Base to normalize macOS full-path output (e.g.,
+	// /usr/local/bin/postgres → postgres) and avoid matching utility
+	// processes like pg_ctl, pg_dump, pg_restore.
+	comm := filepath.Base(strings.TrimSpace(string(out)))
+	lower := strings.ToLower(comm)
+	return lower == "postgres" || lower == "postmaster"
 }
 
 // IsProcessAlive reports whether a process with the given pid exists and is

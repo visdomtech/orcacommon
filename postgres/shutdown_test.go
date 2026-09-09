@@ -145,6 +145,22 @@ func TestShutdownDoneChannel_InitialState(t *testing.T) {
 	}
 }
 
+// TestConnect_RefusesDuringShutdown verifies that Connect() returns an
+// error when the shuttingDown flag is set, preventing new embedded Postgres
+// registrations after graceful shutdown has begun.
+func TestConnect_RefusesDuringShutdown(t *testing.T) {
+	shuttingDown.Store(true)
+	defer shuttingDown.Store(false)
+
+	_, err := Connect(t.Context(), "postgres:embedded:", "test-shutdown-guard")
+	if err == nil {
+		t.Fatal("expected error when shuttingDown is true")
+	}
+	if got := err.Error(); got != "embedded Postgres unavailable: shutdown in progress" {
+		t.Errorf("unexpected error message: %s", got)
+	}
+}
+
 // TestStopWithForceKill_SIGTERMInitiated verifies that stopWithForceKill
 // initiates Postgres shutdown via direct SIGTERM, allowing pg.Stop() to
 // return quickly. Uses a real embedded Postgres instance.

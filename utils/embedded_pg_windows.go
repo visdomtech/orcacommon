@@ -39,6 +39,8 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 }
 
 // KillEmbeddedPG is a no-op stub on Windows.
+// Force-kill via SIGKILL is not applicable on Windows; the graceful pg.Stop()
+// (pg_ctl stop) is the only shutdown path on this platform.
 func KillEmbeddedPG(pid int) error {
 	return fmt.Errorf("KillEmbeddedPG: not supported on windows")
 }

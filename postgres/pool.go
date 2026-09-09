@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,6 +34,10 @@ var (
 	// for force-kill fallback during graceful shutdown.
 	embeddedInstances = make(map[string]embeddedInstance)
 	embeddedPGLock    sync.Mutex
+
+	// stopTimeout is the maximum time allowed for pg.Stop() (pg_ctl stop)
+	// before force-killing the process. Exported as a var for test overrides.
+	stopTimeout = 15 * time.Second
 )
 
 type embeddedInstance struct {
@@ -105,6 +110,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 // does not complete within the deadline, or if the process survives the
 // graceful stop, the process is force-killed via SIGKILL.
 func gracefulShutdown() {
+	shutdownStart := time.Now()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
@@ -118,31 +124,63 @@ func gracefulShutdown() {
 	}
 	clear(keyedPools)
 	keyedPoolLock.Unlock()
+	slog.Info("closed all database connection pools")
 
 	// Stop embedded Postgres instances after pools are closed.
+	// Snapshot the map under the lock, then stop outside the lock
+	// to minimize contention and allow parallel stop attempts.
 	embeddedPGLock.Lock()
-	slog.Info("stopping embedded Postgres instances", "count", len(embeddedInstances))
-	for k, inst := range embeddedInstances {
-		stopEmbeddedPG(k, inst)
+	instances := make(map[string]embeddedInstance, len(embeddedInstances))
+	for k, v := range embeddedInstances {
+		instances[k] = v
 	}
 	clear(embeddedInstances)
 	embeddedPGLock.Unlock()
+
+	slog.Info("stopping embedded Postgres instances", "count", len(instances))
+	var wg sync.WaitGroup
+	for k, inst := range instances {
+		wg.Add(1)
+		go func(key string, i embeddedInstance) {
+			defer wg.Done()
+			stopEmbeddedPG(key, i)
+		}(k, inst)
+	}
+	wg.Wait()
+
+	slog.Info("graceful shutdown complete", "duration", time.Since(shutdownStart))
 }
 
 // stopEmbeddedPG stops a single embedded Postgres instance with a timeout
-// and force-kill fallback. The graceful pg.Stop() is given 15 seconds; if it
-// fails or the process survives, SIGKILL is sent via KillEmbeddedPG.
+// and force-kill fallback. Delegates to stopWithForceKill.
 func stopEmbeddedPG(key string, inst embeddedInstance) {
-	const stopTimeout = 15 * time.Second
+	stopWithForceKill(key, inst)
+}
 
-	// Run pg.Stop() with a deadline so a hanging pg_ctl does not block shutdown.
+// stopWithForceKill stops an embedded Postgres instance with a timeout and
+// SIGKILL force-kill fallback. It is used by gracefulShutdown, Connect()
+// replacement, and Connect() error-cleanup to ensure pg_ctl stop never hangs
+// indefinitely and the process is always terminated.
+//
+// The graceful pg.Stop() is given stopTimeout seconds; if it fails or the
+// process survives, SIGKILL is sent via KillEmbeddedPG. After a confirmed
+// force-kill, the stale postmaster.pid is removed so the library can restart
+// cleanly on the next app launch.
+func stopWithForceKill(key string, inst embeddedInstance) {
+	// Run pg.Stop() with a deadline so a hanging pg_ctl does not block the caller.
+	// Note: if the timeout fires, this goroutine is intentionally abandoned —
+	// it will unblock once SIGKILL reaps the child process.
 	stopErr := make(chan error, 1)
 	go func() { stopErr <- inst.pg.Stop() }()
 
+	var stopSucceeded bool
 	select {
 	case err := <-stopErr:
 		if err != nil {
 			slog.Warn("graceful stop failed, will attempt force-kill", "key", key, "error", err)
+		} else {
+			slog.Info("gracefully stopped embedded Postgres", "key", key)
+			stopSucceeded = true
 		}
 	case <-time.After(stopTimeout):
 		slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout)
@@ -160,7 +198,18 @@ func stopEmbeddedPG(key string, inst embeddedInstance) {
 				slog.Error("failed to force-kill embedded Postgres", "key", key, "pid", pid, "error", killErr)
 			} else {
 				slog.Info("force-killed embedded Postgres", "key", key, "pid", pid)
+				// Remove stale postmaster.pid so the embedded-postgres library
+				// can start cleanly on the next app launch.
+				pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
+				if rmErr := os.Remove(pidFile); rmErr != nil && !os.IsNotExist(rmErr) {
+					slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", rmErr)
+				}
 			}
+		} else if !stopSucceeded && !alive && pid > 0 {
+			// pg.Stop() failed or timed out but the process is already dead.
+			// Clean up the stale PID file.
+			pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
+			_ = os.Remove(pidFile)
 		}
 	}
 }
@@ -238,15 +287,24 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				return nil, fmt.Errorf("get free port: %w", err)
 			}
 
+			// Always resolve the data path explicitly so that stopWithForceKill
+			// can read postmaster.pid for force-kill verification. When no
+			// custom path is given, create an explicit temp directory.
+			effectiveDataPath := opts.dataPath
+			if effectiveDataPath == "" {
+				effectiveDataPath, err = os.MkdirTemp("", "embedded-pg-*")
+				if err != nil {
+					return nil, fmt.Errorf("create temp data path: %w", err)
+				}
+			}
+
 			cfg := embeddedpostgres.DefaultConfig().
 				Username(opts.dbUser).
 				Password(opts.dbPassword).
 				Database(opts.dbName).
 				Port(uint32(port)).
-				Version(embeddedpostgres.V18)
-			if opts.dataPath != "" {
-				cfg = cfg.DataPath(opts.dataPath)
-			}
+				Version(embeddedpostgres.V18).
+				DataPath(effectiveDataPath)
 
 			postgres := embeddedpostgres.NewDatabase(cfg)
 
@@ -255,11 +313,10 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			}
 			embeddedPG = postgres
 
-			effectiveDataPath := opts.dataPath
 			embeddedPGLock.Lock()
 			if old, ok := embeddedInstances[key]; ok {
 				slog.Warn("replacing existing embedded Postgres entry", "key", key)
-				_ = old.pg.Stop()
+				stopWithForceKill(key, old)
 			}
 			embeddedInstances[key] = embeddedInstance{pg: postgres, dataPath: effectiveDataPath}
 			embeddedPGLock.Unlock()
@@ -325,10 +382,20 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		if embeddedPG != nil {
-			_ = embeddedPG.Stop()
+			// Look up the instance we just registered and use the shared
+			// stop-with-force-kill path instead of bare pg.Stop().
 			embeddedPGLock.Lock()
-			delete(embeddedInstances, key)
+			inst, exists := embeddedInstances[key]
+			if exists {
+				delete(embeddedInstances, key)
+			}
 			embeddedPGLock.Unlock()
+			if exists {
+				stopWithForceKill(key, inst)
+			} else {
+				// Fallback: instance was never registered (shouldn't happen).
+				_ = embeddedPG.Stop()
+			}
 		}
 		if tcContainer != nil {
 			_ = tcContainer.Terminate(context.Background())

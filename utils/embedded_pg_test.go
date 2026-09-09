@@ -299,26 +299,27 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 }
 
 func TestKillEmbeddedPG(t *testing.T) {
-	t.Run("kills a running process", func(t *testing.T) {
+	t.Run("refuses to kill non-postgres process", func(t *testing.T) {
 		cmd := exec.Command("sleep", "60")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start child: %v", err)
 		}
+		defer func() {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}()
 		pid := cmd.Process.Pid
 		if !IsProcessAlive(pid) {
-			t.Fatal("child process should be alive before kill")
+			t.Fatal("child process should be alive before kill attempt")
 		}
+		// KillEmbeddedPG should detect that "sleep" is not a postgres
+		// process and refuse to send SIGKILL.
 		if err := KillEmbeddedPG(pid); err != nil {
-			t.Fatalf("KillEmbeddedPG: %v", err)
+			t.Fatalf("KillEmbeddedPG should not error for non-postgres process: %v", err)
 		}
-		// Reap the zombie via cmd.Wait (the parent) and verify exit.
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-			// Process reaped — it was killed.
-		case <-time.After(3 * time.Second):
-			t.Fatal("process not reaped within 3s after KillEmbeddedPG")
+		// The process should still be alive since the kill was refused.
+		if !IsProcessAlive(pid) {
+			t.Error("non-postgres process should still be alive after KillEmbeddedPG refusal")
 		}
 	})
 

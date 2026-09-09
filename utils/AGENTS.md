@@ -40,7 +40,7 @@ Unix-only (build constraint `!windows`). Windows has no-op stubs — all probes 
 - `ReadPostmasterPort(dataPath)` — reads port from line 4 of `postmaster.pid`.
 - `ReuseEmbeddedPG(dataPath)` — composite check: PID alive AND port listening → `(true, port)`.
 - `IsEmbeddedPGRunning(dataPath)` — convenience wrapper around `ReuseEmbeddedPG`.
-- `KillEmbeddedPG(pid)` — sends SIGKILL with waitpid fallback for zombie reaping; used as force-kill fallback when `pg_ctl stop` fails. Polls up to 5s for process death.
+- `KillEmbeddedPG(pid)` — sends SIGKILL with waitpid fallback for zombie reaping; used as force-kill fallback when `pg_ctl stop` fails. Verifies process identity via `ps -p` before sending signal to guard against PID reuse. Polls up to 5s for process death.
 - `IsProcessAlive(pid)` — `Signal(0)` liveness probe; handles Go 1.24+ `os.FindProcess` behavior.
 
 ### Split-Level slog Handler (`slog_handler.go`)

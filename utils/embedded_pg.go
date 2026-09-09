@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -165,10 +166,19 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 
 // KillEmbeddedPG sends SIGKILL to the process identified by pid and waits for
 // it to terminate. This is a last-resort fallback used when pg_ctl stop fails
-// or times out during graceful shutdown.
+// or times out during graceful shutdown. Before sending the signal, it
+// verifies the target process is a Postgres process to avoid killing an
+// unrelated process that may have reused the PID.
 func KillEmbeddedPG(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid: %d", pid)
+	}
+	// Verify the target process is actually a Postgres process before
+	// sending SIGKILL. This guards against PID reuse after the original
+	// process has exited.
+	if !isPostgresProcess(pid) {
+		slog.Warn("pid does not appear to be a Postgres process, skipping kill", "pid", pid)
+		return nil
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -189,12 +199,29 @@ func KillEmbeddedPG(pid int) error {
 		}
 		// Attempt non-blocking waitpid: if we are the parent, this reaps
 		// the zombie and the next Signal(0) will return ESRCH.
+		// When we are NOT the parent (e.g., process re-parented to init),
+		// Wait4 returns ECHILD and wpid == 0 — the loop relies on
+		// IsProcessAlive instead.
 		if wpid, _ := syscall.Wait4(pid, nil, syscall.WNOHANG, nil); wpid == pid {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("pid %d still alive after SIGKILL", pid)
+}
+
+// isPostgresProcess checks whether the process identified by pid is a
+// Postgres process by inspecting its command name. This guards against
+// PID reuse when force-killing embedded Postgres instances.
+func isPostgresProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		// Process may have exited between CheckPIDFile and here — treat as
+		// not a postgres process (nothing to kill).
+		return false
+	}
+	comm := strings.TrimSpace(string(out))
+	return strings.Contains(strings.ToLower(comm), "postgres")
 }
 
 // IsProcessAlive reports whether a process with the given pid exists and is

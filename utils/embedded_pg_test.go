@@ -298,6 +298,85 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 	})
 }
 
+func TestKillEmbeddedPG(t *testing.T) {
+	t.Run("kills a running process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		pid := cmd.Process.Pid
+		if !IsProcessAlive(pid) {
+			t.Fatal("child process should be alive before kill")
+		}
+		if err := KillEmbeddedPG(pid); err != nil {
+			t.Fatalf("KillEmbeddedPG: %v", err)
+		}
+		// Reap the zombie via cmd.Wait (the parent) and verify exit.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+			// Process reaped — it was killed.
+		case <-time.After(3 * time.Second):
+			t.Fatal("process not reaped within 3s after KillEmbeddedPG")
+		}
+	})
+
+	t.Run("succeeds for already dead process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		deadPID := cmd.Process.Pid
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+
+		if err := KillEmbeddedPG(deadPID); err != nil {
+			t.Fatalf("KillEmbeddedPG on dead process: %v", err)
+		}
+	})
+
+	t.Run("returns error for invalid pid", func(t *testing.T) {
+		if err := KillEmbeddedPG(0); err == nil {
+			t.Error("expected error for pid 0")
+		}
+		if err := KillEmbeddedPG(-1); err == nil {
+			t.Error("expected error for pid -1")
+		}
+	})
+}
+
+func TestIsProcessAlive(t *testing.T) {
+	t.Run("returns true for current process", func(t *testing.T) {
+		if !IsProcessAlive(os.Getpid()) {
+			t.Error("IsProcessAlive should return true for current process")
+		}
+	})
+
+	t.Run("returns false for dead process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		deadPID := cmd.Process.Pid
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+
+		if IsProcessAlive(deadPID) {
+			t.Error("IsProcessAlive should return false for dead process")
+		}
+	})
+
+	t.Run("returns false for zero and negative pid", func(t *testing.T) {
+		if IsProcessAlive(0) {
+			t.Error("IsProcessAlive(0) should return false")
+		}
+		if IsProcessAlive(-1) {
+			t.Error("IsProcessAlive(-1) should return false")
+		}
+	})
+}
+
 func TestReuseEmbeddedPG(t *testing.T) {
 	t.Run("returns false for empty dataPath", func(t *testing.T) {
 		running, port := ReuseEmbeddedPG("")

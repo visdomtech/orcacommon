@@ -37,3 +37,13 @@ func IsEmbeddedPGRunning(dataPath string) bool {
 func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 	return false, 0
 }
+
+// KillEmbeddedPG is a no-op stub on Windows.
+func KillEmbeddedPG(pid int) error {
+	return fmt.Errorf("KillEmbeddedPG: not supported on windows")
+}
+
+// IsProcessAlive is a no-op stub on Windows.
+func IsProcessAlive(pid int) bool {
+	return false
+}

@@ -163,6 +163,57 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 	return true, existingPort
 }
 
+// KillEmbeddedPG sends SIGKILL to the process identified by pid and waits for
+// it to terminate. This is a last-resort fallback used when pg_ctl stop fails
+// or times out during graceful shutdown.
+func KillEmbeddedPG(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid: %d", pid)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process %d: %w", pid, err)
+	}
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		// Process may have already exited — treat "no such process" and
+		// "process already finished" as success.
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return fmt.Errorf("send SIGKILL to pid %d: %w", pid, err)
+	}
+	// Poll until the process is reaped or we time out.
+	for i := 0; i < 50; i++ { // up to 5 seconds
+		if !IsProcessAlive(pid) {
+			return nil
+		}
+		// Attempt non-blocking waitpid: if we are the parent, this reaps
+		// the zombie and the next Signal(0) will return ESRCH.
+		if wpid, _ := syscall.Wait4(pid, nil, syscall.WNOHANG, nil); wpid == pid {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if IsProcessAlive(pid) {
+		return fmt.Errorf("pid %d still alive after SIGKILL", pid)
+	}
+	return nil
+}
+
+// IsProcessAlive reports whether a process with the given pid exists and is
+// reachable via Signal(0). On Unix, os.FindProcess always succeeds, so the
+// Signal(0) probe is the real liveness check.
+func IsProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
 // parsePostmasterInfo reads the PID (line 1) and port (line 4) from the
 // postmaster.pid file in a single file open, avoiding TOCTOU races.
 func parsePostmasterInfo(dataPath string) (pid int, port int, err error) {

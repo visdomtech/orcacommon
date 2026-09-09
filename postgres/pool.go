@@ -223,6 +223,7 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 	// If alive, force-kill it.
 	if inst.dataPath != "" {
 		_, alive, pid, err := utils.CheckPIDFile(inst.dataPath)
+		pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
 		if err != nil {
 			slog.Warn("could not read postmaster.pid after stop", "key", key, "error", err)
 		} else if alive && pid > 0 {
@@ -231,9 +232,6 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 				slog.Error("failed to force-kill embedded Postgres", "key", key, "pid", pid, "error", killErr)
 			} else {
 				slog.Info("force-killed embedded Postgres", "key", key, "pid", pid)
-				// Remove stale postmaster.pid so the embedded-postgres library
-				// can start cleanly on the next app launch.
-				pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
 				if rmErr := os.Remove(pidFile); rmErr != nil && !os.IsNotExist(rmErr) {
 					slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", rmErr)
 				}
@@ -241,7 +239,6 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 		} else if !stopSucceeded && !alive && pid > 0 {
 			// pg.Stop() failed or timed out but the process is already dead.
 			// Clean up the stale PID file.
-			pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
 			_ = os.Remove(pidFile)
 		}
 	}

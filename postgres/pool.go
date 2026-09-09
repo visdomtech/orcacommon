@@ -46,8 +46,9 @@ var (
 )
 
 type embeddedInstance struct {
-	pg       *embeddedpostgres.EmbeddedPostgres
+	pg       *embeddedpostgres.EmbeddedPostgres // nil for reused instances (not started by this process)
 	dataPath string
+	reused   bool // true when Connect detected an already-running instance at the data path
 }
 
 func init() {
@@ -165,6 +166,10 @@ func gracefulShutdown() {
 	embeddedPGLock.Unlock()
 
 	slog.Info("stopping embedded Postgres instances", "count", len(instances))
+	for k, inst := range instances {
+		_, _, pid, _ := utils.CheckPIDFile(inst.dataPath)
+		slog.Info("stopping embedded Postgres", "key", k, "pid", pid, "dataPath", inst.dataPath, "reused", inst.reused)
+	}
 	var wg sync.WaitGroup
 	for k, inst := range instances {
 		wg.Add(1)
@@ -200,24 +205,28 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 	// pg_ctl subprocess does not respond.
 	sendPostgresSIGTERM(key, inst.dataPath)
 
-	// Run pg.Stop() with a deadline so a hanging pg_ctl does not block the caller.
-	// Note: if the timeout fires, this goroutine is intentionally abandoned —
-	// it will unblock once SIGKILL reaps the child process.
-	stopErr := make(chan error, 1)
-	go func() { stopErr <- inst.pg.Stop() }()
-
 	var stopSucceeded bool
-	select {
-	case err := <-stopErr:
-		if err != nil {
-			slog.Warn("graceful stop failed, will attempt force-kill", "key", key, "error", err)
-		} else {
-			slog.Info("gracefully stopped embedded Postgres", "key", key)
-			stopSucceeded = true
+	if inst.pg != nil {
+		// Run pg.Stop() with a deadline so a hanging pg_ctl does not block the caller.
+		// Note: if the timeout fires, this goroutine is intentionally abandoned —
+		// it will unblock once SIGKILL reaps the child process.
+		stopErr := make(chan error, 1)
+		go func() { stopErr <- inst.pg.Stop() }()
+
+		select {
+		case err := <-stopErr:
+			if err != nil {
+				slog.Warn("graceful stop failed, will attempt force-kill", "key", key, "error", err)
+			} else {
+				slog.Info("gracefully stopped embedded Postgres", "key", key)
+				stopSucceeded = true
+			}
+		case <-time.After(stopTimeout):
+			slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout)
 		}
-	case <-time.After(stopTimeout):
-		slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout)
 	}
+	// For reused instances (pg == nil), SIGTERM was already sent above.
+	// Fall through to PID verification and force-kill if needed.
 
 	// Verify the process is actually dead by checking the PID file.
 	// If alive, force-kill it.
@@ -342,6 +351,19 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if err := ensureDatabaseExists("127.0.0.1", existingPort, opts.dbUser, opts.dbPassword, opts.dbName); err != nil {
 				return nil, fmt.Errorf("ensure database %q exists: %w", opts.dbName, err)
 			}
+
+			// Register the reused instance for graceful shutdown so it is
+			// stopped when the application exits. pg is nil because this
+			// process did not start the instance — stopWithForceKill falls
+			// back to SIGTERM + PID verification for reused instances.
+			embeddedPGLock.Lock()
+			if old, ok := embeddedInstances[key]; ok {
+				slog.Warn("replacing existing embedded Postgres entry", "key", key)
+				stopWithForceKill(key, old)
+			}
+			embeddedInstances[key] = embeddedInstance{pg: nil, dataPath: opts.dataPath, reused: true}
+			embeddedPGLock.Unlock()
+
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {

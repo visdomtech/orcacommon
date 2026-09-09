@@ -165,6 +165,47 @@ func TestStopWithForceKill_SIGTERMInitiated(t *testing.T) {
 	}
 }
 
+// TestStopWithForceKill_ReusedInstance verifies that stopWithForceKill
+// correctly handles reused instances (pg == nil) by sending SIGTERM
+// and verifying the process exits. No pg.Stop() call is made.
+func TestStopWithForceKill_ReusedInstance(t *testing.T) {
+	// Start a subprocess to simulate a reused embedded Postgres.
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start subprocess: %v", err)
+	}
+	defer cmd.Process.Kill() //nolint:errcheck // cleanup best-effort
+
+	pid := cmd.Process.Pid
+	dataPath := t.TempDir()
+
+	// Write a fake postmaster.pid for the subprocess.
+	pidContent := strconv.Itoa(pid) + "\n" + dataPath + "\n1234567890\n5432\n/tmp\n"
+	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(pidContent), 0644); err != nil {
+		t.Fatalf("write postmaster.pid: %v", err)
+	}
+
+	// Create a reused instance (pg is nil).
+	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+
+	start := time.Now()
+	stopWithForceKill("test-reused", inst)
+	elapsed := time.Since(start)
+
+	// Verify the subprocess was killed by SIGTERM.
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		// Subprocess exited as expected.
+	case <-time.After(5 * time.Second):
+		t.Fatal("reused instance subprocess did not exit within 5s")
+		cmd.Process.Kill() //nolint:errcheck
+	}
+
+	t.Logf("stopWithForceKill (reused) completed in %v", elapsed)
+}
+
 // checkPIDFileSafe is a test helper that reads the postmaster.pid and checks
 // whether the referenced process is still alive, ignoring parse errors for
 // cleaner test assertions.

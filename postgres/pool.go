@@ -60,6 +60,12 @@ func init() {
 // Postgres instances). If no shutdown signal has been received, it blocks
 // indefinitely.
 //
+// This function only affects locally embedded Postgres instances (started
+// via "postgres:embedded:" URLs). It does NOT stop, restart, or otherwise
+// interfere with remote Postgres servers — for those, it merely closes the
+// client-side connection pool (a normal disconnect) and returns almost
+// instantly.
+//
 // Consuming applications MUST call this at the end of main (or in their
 // signal handler) to prevent the process from exiting before the embedded
 // Postgres shutdown sequence completes. Without this call, main may return

@@ -164,11 +164,17 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 	return true, existingPort
 }
 
+// ErrNotPostgresProcess is returned by KillEmbeddedPG when the target PID
+// does not appear to be a Postgres process. Callers can use errors.Is to
+// distinguish "skipped because not postgres" from other kill failures.
+var ErrNotPostgresProcess = errors.New("pid is not a postgres process")
+
 // KillEmbeddedPG sends SIGKILL to the process identified by pid and waits for
 // it to terminate. This is a last-resort fallback used when pg_ctl stop fails
 // or times out during graceful shutdown. Before sending the signal, it
 // verifies the target process is a Postgres process to avoid killing an
-// unrelated process that may have reused the PID.
+// unrelated process that may have reused the PID. Returns ErrNotPostgresProcess
+// when the PID does not appear to be a Postgres process.
 func KillEmbeddedPG(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid: %d", pid)
@@ -176,9 +182,9 @@ func KillEmbeddedPG(pid int) error {
 	// Verify the target process is actually a Postgres process before
 	// sending SIGKILL. This guards against PID reuse after the original
 	// process has exited.
-	if !isPostgresProcess(pid) {
+	if !IsPostgresProcess(pid) {
 		slog.Warn("pid does not appear to be a Postgres process, skipping kill", "pid", pid)
-		return nil
+		return ErrNotPostgresProcess
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -192,8 +198,10 @@ func KillEmbeddedPG(pid int) error {
 		}
 		return fmt.Errorf("send SIGKILL to pid %d: %w", pid, err)
 	}
-	// Poll until the process is reaped or we time out.
-	for i := 0; i < 50; i++ { // up to 5 seconds
+	// Poll until the process is reaped or we time out (~5s total).
+	// Exponential backoff: starts at 25ms, caps at 500ms per iteration.
+	delay := 25 * time.Millisecond
+	for i := 0; i < 20; i++ {
 		if !IsProcessAlive(pid) {
 			return nil
 		}
@@ -205,15 +213,20 @@ func KillEmbeddedPG(pid int) error {
 		if wpid, _ := syscall.Wait4(pid, nil, syscall.WNOHANG, nil); wpid == pid {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(delay)
+		if delay < 500*time.Millisecond {
+			delay *= 2
+		}
 	}
 	return fmt.Errorf("pid %d still alive after SIGKILL", pid)
 }
 
-// isPostgresProcess checks whether the process identified by pid is a
+// IsPostgresProcess checks whether the process identified by pid is a
 // Postgres process by inspecting its command name. This guards against
 // PID reuse when force-killing embedded Postgres instances.
-func isPostgresProcess(pid int) bool {
+// Exported so that the postgres package can apply the same guard before
+// sending SIGTERM via sendPostgresSIGTERM.
+func IsPostgresProcess(pid int) bool {
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 	if err != nil {
 		// Process may have exited between CheckPIDFile and here — treat as

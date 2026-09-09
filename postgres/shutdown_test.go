@@ -12,6 +12,34 @@ import (
 	"time"
 )
 
+// startFakePostgresProcess creates a symlink named "postgres" pointing to /bin/sleep
+// in a temp directory, then exec's it. The resulting process will show as "postgres"
+// in ps -o comm= output, satisfying the IsPostgresProcess guard.
+// Returns the cmd (not yet waited) and the data path containing the PID file.
+func startFakePostgresProcess(t *testing.T) (*exec.Cmd, string) {
+	t.Helper()
+	binDir := t.TempDir()
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep: %v", err)
+	}
+	fakePG := filepath.Join(binDir, "postgres")
+	if err := os.Symlink(sleepPath, fakePG); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	cmd := exec.Command(fakePG, "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fake postgres: %v", err)
+	}
+	dataPath := t.TempDir()
+	pidContent := strconv.Itoa(cmd.Process.Pid) + "\n" + dataPath + "\n1234567890\n5432\n/tmp\n"
+	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(pidContent), 0644); err != nil {
+		cmd.Process.Kill() //nolint:errcheck
+		t.Fatalf("write postmaster.pid: %v", err)
+	}
+	return cmd, dataPath
+}
+
 // TestSendPostgresSIGTERM_EmptyDataPath verifies that sendPostgresSIGTERM
 // is a no-op when the data path is empty.
 func TestSendPostgresSIGTERM_EmptyDataPath(t *testing.T) {
@@ -41,27 +69,39 @@ func TestSendPostgresSIGTERM_DeadProcess(t *testing.T) {
 	sendPostgresSIGTERM("test-dead-pid", dataPath)
 }
 
-// TestSendPostgresSIGTERM_LiveProcess verifies that sendPostgresSIGTERM
-// sends SIGTERM to the process identified by the PID in postmaster.pid.
-// It spawns a real subprocess as the target to validate signal delivery.
-func TestSendPostgresSIGTERM_LiveProcess(t *testing.T) {
-	// Start a long-running subprocess that we can signal.
+// TestSendPostgresSIGTERM_NonPostgresProcess verifies that sendPostgresSIGTERM
+// refuses to send SIGTERM to a process that is not named "postgres".
+func TestSendPostgresSIGTERM_NonPostgresProcess(t *testing.T) {
+	// Start a plain sleep process (not named postgres).
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start subprocess: %v", err)
 	}
-	defer cmd.Process.Kill() //nolint:errcheck // cleanup best-effort
+	defer cmd.Process.Kill() //nolint:errcheck
 
 	pid := cmd.Process.Pid
 	dataPath := t.TempDir()
-
-	// Write a fake postmaster.pid with the subprocess PID.
 	pidContent := strconv.Itoa(pid) + "\n" + dataPath + "\n1234567890\n5432\n/tmp\n"
 	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(pidContent), 0644); err != nil {
 		t.Fatalf("write postmaster.pid: %v", err)
 	}
 
-	// sendPostgresSIGTERM should send SIGTERM to our subprocess.
+	// sendPostgresSIGTERM should skip this non-postgres process.
+	sendPostgresSIGTERM("test-non-pg", dataPath)
+
+	// The process should still be alive (SIGTERM was not sent).
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatal("process should still be alive after sendPostgresSIGTERM skipped it")
+	}
+}
+
+// TestSendPostgresSIGTERM_LiveProcess verifies that sendPostgresSIGTERM
+// sends SIGTERM to a process named "postgres" (simulated via symlink).
+func TestSendPostgresSIGTERM_LiveProcess(t *testing.T) {
+	cmd, dataPath := startFakePostgresProcess(t)
+	defer cmd.Process.Kill() //nolint:errcheck
+
+	// sendPostgresSIGTERM should send SIGTERM to our fake postgres process.
 	sendPostgresSIGTERM("test-live", dataPath)
 
 	// The subprocess should have received SIGTERM and exited.
@@ -168,22 +208,10 @@ func TestStopWithForceKill_SIGTERMInitiated(t *testing.T) {
 // TestStopWithForceKill_ReusedInstance verifies that stopWithForceKill
 // correctly handles reused instances (pg == nil) by sending SIGTERM
 // and verifying the process exits. No pg.Stop() call is made.
+// Uses a symlink-named "postgres" process to satisfy the IsPostgresProcess guard.
 func TestStopWithForceKill_ReusedInstance(t *testing.T) {
-	// Start a subprocess to simulate a reused embedded Postgres.
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start subprocess: %v", err)
-	}
-	defer cmd.Process.Kill() //nolint:errcheck // cleanup best-effort
-
-	pid := cmd.Process.Pid
-	dataPath := t.TempDir()
-
-	// Write a fake postmaster.pid for the subprocess.
-	pidContent := strconv.Itoa(pid) + "\n" + dataPath + "\n1234567890\n5432\n/tmp\n"
-	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(pidContent), 0644); err != nil {
-		t.Fatalf("write postmaster.pid: %v", err)
-	}
+	cmd, dataPath := startFakePostgresProcess(t)
+	defer cmd.Process.Kill() //nolint:errcheck
 
 	// Create a reused instance (pg is nil).
 	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
@@ -204,6 +232,76 @@ func TestStopWithForceKill_ReusedInstance(t *testing.T) {
 	}
 
 	t.Logf("stopWithForceKill (reused) completed in %v", elapsed)
+}
+
+// TestStopWithForceKill_ForceKillPath verifies that stopWithForceKill
+// falls back to SIGKILL when the process survives SIGTERM and is confirmed
+// dead with PID file cleanup. Uses a copy of the sleep binary renamed to
+// "postgres" so that IsPostgresProcess identifies it correctly.
+func TestStopWithForceKill_ForceKillPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping force-kill test in short mode")
+	}
+
+	// Copy the sleep binary and rename it to "postgres" so IsPostgresProcess
+	// identifies it as a Postgres process.
+	binDir := t.TempDir()
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep: %v", err)
+	}
+	fakePG := filepath.Join(binDir, "postgres")
+	sleepData, err := os.ReadFile(sleepPath)
+	if err != nil {
+		t.Fatalf("read sleep binary: %v", err)
+	}
+	if err := os.WriteFile(fakePG, sleepData, 0755); err != nil {
+		t.Fatalf("write fake postgres binary: %v", err)
+	}
+
+	// Start the fake postgres process.
+	cmd := exec.Command(fakePG, "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fake postgres: %v", err)
+	}
+	defer cmd.Process.Kill() //nolint:errcheck
+
+	pid := cmd.Process.Pid
+	dataPath := t.TempDir()
+	pidContent := strconv.Itoa(pid) + "\n" + dataPath + "\n1234567890\n5432\n/tmp\n"
+	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(pidContent), 0644); err != nil {
+		t.Fatalf("write postmaster.pid: %v", err)
+	}
+
+	// Reduce stopTimeout for faster test.
+	origTimeout := stopTimeout
+	stopTimeout = 2 * time.Second
+	defer func() { stopTimeout = origTimeout }()
+
+	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+	start := time.Now()
+	stopWithForceKill("test-forcekill", inst)
+	elapsed := time.Since(start)
+
+	// Verify the process is dead (SIGTERM killed sleep immediately,
+	// then PID file was cleaned up).
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		// Process exited.
+	case <-time.After(5 * time.Second):
+		t.Fatal("process did not exit within 5s")
+		cmd.Process.Kill() //nolint:errcheck
+	}
+
+	// Verify the PID file was cleaned up.
+	pidFile := filepath.Join(dataPath, "postmaster.pid")
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("postmaster.pid should have been removed, got err: %v", err)
+	}
+
+	t.Logf("stopWithForceKill (force-kill path) completed in %v", elapsed)
 }
 
 // checkPIDFileSafe is a test helper that reads the postmaster.pid and checks

@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -313,9 +314,10 @@ func TestKillEmbeddedPG(t *testing.T) {
 			t.Fatal("child process should be alive before kill attempt")
 		}
 		// KillEmbeddedPG should detect that "sleep" is not a postgres
-		// process and refuse to send SIGKILL.
-		if err := KillEmbeddedPG(pid); err != nil {
-			t.Fatalf("KillEmbeddedPG should not error for non-postgres process: %v", err)
+		// process and refuse to send SIGKILL, returning ErrNotPostgresProcess.
+		err := KillEmbeddedPG(pid)
+		if !errors.Is(err, ErrNotPostgresProcess) {
+			t.Fatalf("KillEmbeddedPG should return ErrNotPostgresProcess for non-postgres process, got: %v", err)
 		}
 		// The process should still be alive since the kill was refused.
 		if !IsProcessAlive(pid) {
@@ -323,7 +325,7 @@ func TestKillEmbeddedPG(t *testing.T) {
 		}
 	})
 
-	t.Run("succeeds for already dead process", func(t *testing.T) {
+	t.Run("returns ErrNotPostgresProcess for already dead process", func(t *testing.T) {
 		cmd := exec.Command("sleep", "60")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start child: %v", err)
@@ -332,8 +334,11 @@ func TestKillEmbeddedPG(t *testing.T) {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 
-		if err := KillEmbeddedPG(deadPID); err != nil {
-			t.Fatalf("KillEmbeddedPG on dead process: %v", err)
+		// A dead process cannot be identified as postgres, so KillEmbeddedPG
+		// returns ErrNotPostgresProcess (safe no-op).
+		err := KillEmbeddedPG(deadPID)
+		if !errors.Is(err, ErrNotPostgresProcess) {
+			t.Fatalf("KillEmbeddedPG on dead process: expected ErrNotPostgresProcess, got: %v", err)
 		}
 	})
 

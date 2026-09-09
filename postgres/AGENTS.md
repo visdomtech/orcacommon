@@ -58,7 +58,11 @@ Atlas-based migration runner:
 ### Graceful Shutdown (`pool.go`)
 `init()` launches `gracefulShutdown()` goroutine. On SIGTERM/SIGINT:
 1. Close all keyed pools (drain connections).
-2. Stop all embedded Postgres instances.
+2. Stop all embedded Postgres instances with a 15s timeout per instance.
+   - If `pg.Stop()` (pg_ctl smart mode) fails or hangs, the timeout triggers.
+   - After stop, the postmaster.pid PID is verified via `CheckPIDFile`.
+   - If the process is still alive, `utils.KillEmbeddedPG(pid)` sends SIGKILL.
+   - Tracks data paths via `embeddedInstance` struct for PID file verification.
 
 ## Configuration
 

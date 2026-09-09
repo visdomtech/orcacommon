@@ -38,6 +38,11 @@ var (
 	// stopTimeout is the maximum time allowed for pg.Stop() (pg_ctl stop)
 	// before force-killing the process. Exported as a var for test overrides.
 	stopTimeout = 15 * time.Second
+
+	// shutdownDone is closed when gracefulShutdown completes, allowing
+	// consuming applications to block in WaitForGracefulShutdown until
+	// all cleanup (pool closing, embedded Postgres stop) has finished.
+	shutdownDone = make(chan struct{})
 )
 
 type embeddedInstance struct {
@@ -47,6 +52,27 @@ type embeddedInstance struct {
 
 func init() {
 	go gracefulShutdown()
+}
+
+// WaitForGracefulShutdown blocks until the graceful shutdown handler has
+// completed all cleanup (closing connection pools and stopping embedded
+// Postgres instances). If no shutdown signal has been received, it blocks
+// indefinitely.
+//
+// Consuming applications MUST call this at the end of main (or in their
+// signal handler) to prevent the process from exiting before the embedded
+// Postgres shutdown sequence completes. Without this call, main may return
+// while the shutdown goroutine is still running, causing the Go runtime to
+// terminate all goroutines — including the one performing cleanup.
+//
+//	func main() {
+//	    // ... start servers, open pools ...
+//	    <-waitForSignal() // app's own signal handling
+//	    // ... stop HTTP servers ...
+//	    postgres.WaitForGracefulShutdown() // block until pools and embedded PG are cleaned up
+//	}
+func WaitForGracefulShutdown() {
+	<-shutdownDone
 }
 
 // OpenPool returns the process-wide singleton pgxpool connection.
@@ -110,6 +136,7 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 // does not complete within the deadline, or if the process survives the
 // graceful stop, the process is force-killed via SIGKILL.
 func gracefulShutdown() {
+	defer close(shutdownDone)
 	shutdownStart := time.Now()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
@@ -167,6 +194,12 @@ func stopEmbeddedPG(key string, inst embeddedInstance) {
 // force-kill, the stale postmaster.pid is removed so the library can restart
 // cleanly on the next app launch.
 func stopWithForceKill(key string, inst embeddedInstance) {
+	// Send SIGTERM directly to the Postgres process to initiate a fast
+	// graceful shutdown. This avoids relying solely on pg_ctl stop -w (called
+	// by the library's pg.Stop()), which can hang indefinitely when the
+	// pg_ctl subprocess does not respond.
+	sendPostgresSIGTERM(key, inst.dataPath)
+
 	// Run pg.Stop() with a deadline so a hanging pg_ctl does not block the caller.
 	// Note: if the timeout fires, this goroutine is intentionally abandoned —
 	// it will unblock once SIGKILL reaps the child process.
@@ -212,6 +245,39 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 			_ = os.Remove(pidFile)
 		}
 	}
+}
+
+// sendPostgresSIGTERM reads the PID from the postmaster.pid file and sends
+// SIGTERM directly to the Postgres process. This initiates a graceful
+// Postgres shutdown (equivalent to pg_ctl stop -m fast) without going
+// through the pg_ctl subprocess, which can hang. When called before
+// pg.Stop(), it ensures Postgres is already shutting down by the time
+// pg_ctl runs, making pg.Stop() return quickly.
+//
+// On Windows (or when the data path is empty), this is a no-op — the
+// library's pg.Stop() is the only shutdown path.
+func sendPostgresSIGTERM(key string, dataPath string) {
+	if dataPath == "" {
+		return
+	}
+	_, alive, pid, err := utils.CheckPIDFile(dataPath)
+	if err != nil {
+		slog.Warn("could not read postmaster.pid for SIGTERM", "key", key, "error", err)
+		return
+	}
+	if !alive || pid <= 0 {
+		return
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		slog.Warn("could not find Postgres process for SIGTERM", "key", key, "pid", pid, "error", err)
+		return
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		slog.Warn("could not send SIGTERM to Postgres", "key", key, "pid", pid, "error", err)
+		return
+	}
+	slog.Info("sent SIGTERM to embedded Postgres", "key", key, "pid", pid)
 }
 
 func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {

@@ -194,10 +194,7 @@ func KillEmbeddedPG(pid int) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if IsProcessAlive(pid) {
-		return fmt.Errorf("pid %d still alive after SIGKILL", pid)
-	}
-	return nil
+	return fmt.Errorf("pid %d still alive after SIGKILL", pid)
 }
 
 // IsProcessAlive reports whether a process with the given pid exists and is

@@ -63,7 +63,7 @@ On SIGTERM/SIGINT:
 2. Snapshot the embedded PG map under lock, then stop instances in parallel (WaitGroup) outside the lock.
 3. Each instance goes through `stopWithForceKill` (three-tier strategy):
    - SIGTERM sent directly to Postgres PID (via postmaster.pid) for instant shutdown initiation.
-   - `pg.Stop()` (pg_ctl smart mode) with a configurable `stopTimeout` (default 15s); returns quickly since PG is already stopping.
+   - `pg.Stop()` (pg_ctl smart mode) with a configurable `stopTimeout` (default 15s); returns quickly since PG is already stopping. Skipped for reused instances (pg == nil).
    - If stop fails or hangs, the timeout triggers.
    - After stop, the postmaster.pid PID is verified via `CheckPIDFile`.
    - If the process is still alive, `utils.KillEmbeddedPG(pid)` sends SIGKILL.

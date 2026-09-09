@@ -171,13 +171,7 @@ func gracefulShutdown() {
 	// Stop embedded Postgres instances after pools are closed.
 	// Snapshot the map under the lock, then stop outside the lock
 	// to minimize contention and allow parallel stop attempts.
-	embeddedPGLock.Lock()
-	instances := make(map[string]embeddedInstance, len(embeddedInstances))
-	for k, v := range embeddedInstances {
-		instances[k] = v
-	}
-	clear(embeddedInstances)
-	embeddedPGLock.Unlock()
+	instances := snapshotAndClearEmbeddedInstances()
 
 	slog.Info("stopping embedded Postgres instances", "count", len(instances))
 	var wg sync.WaitGroup
@@ -192,13 +186,9 @@ func gracefulShutdown() {
 
 	// Re-check for stragglers: a concurrent Connect() may have added
 	// an instance between our initial snapshot and wg.Wait() returning.
-	embeddedPGLock.Lock()
-	stragglers := make(map[string]embeddedInstance, len(embeddedInstances))
-	for k, v := range embeddedInstances {
-		stragglers[k] = v
-	}
-	clear(embeddedInstances)
-	embeddedPGLock.Unlock()
+	// (The shuttingDown flag prevents new registrations, but instances
+	// registered before the flag was set may still appear here.)
+	stragglers := snapshotAndClearEmbeddedInstances()
 	for k, inst := range stragglers {
 		slog.Warn("stopping straggler embedded Postgres added during shutdown", "key", k)
 		stopWithForceKill(k, inst)
@@ -269,26 +259,42 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 			if killErr := utils.KillEmbeddedPG(pid); killErr != nil {
 				if errors.Is(killErr, utils.ErrNotPostgresProcess) {
 					slog.Warn("PID is not a Postgres process, removing stale PID file only", "key", key, "pid", pid)
-					if rmErr := os.Remove(pidFile); rmErr != nil && !os.IsNotExist(rmErr) {
-						slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", rmErr)
-					}
+					removeStalePIDFile(key, pidFile)
 				} else {
 					slog.Error("failed to force-kill embedded Postgres", "key", key, "pid", pid, "error", killErr)
 				}
 			} else {
 				slog.Info("force-killed embedded Postgres", "key", key, "pid", pid, "elapsed", time.Since(start))
-				if rmErr := os.Remove(pidFile); rmErr != nil && !os.IsNotExist(rmErr) {
-					slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", rmErr)
-				}
+				removeStalePIDFile(key, pidFile)
 			}
 		} else if !stopSucceeded && !alive && pid > 0 {
 			// pg.Stop() failed or timed out but the process is already dead.
 			// Clean up the stale PID file.
 			slog.Debug("process already dead, removing stale postmaster.pid", "key", key, "pid", pid)
-			if rmErr := os.Remove(pidFile); rmErr != nil && !os.IsNotExist(rmErr) {
-				slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", rmErr)
-			}
+			removeStalePIDFile(key, pidFile)
 		}
+	}
+}
+
+// snapshotAndClearEmbeddedInstances atomically copies the embedded instance
+// map and clears the original. Used during graceful shutdown to allow
+// stopping instances outside the lock.
+func snapshotAndClearEmbeddedInstances() map[string]embeddedInstance {
+	embeddedPGLock.Lock()
+	snapshot := make(map[string]embeddedInstance, len(embeddedInstances))
+	for k, v := range embeddedInstances {
+		snapshot[k] = v
+	}
+	clear(embeddedInstances)
+	embeddedPGLock.Unlock()
+	return snapshot
+}
+
+// removeStalePIDFile removes a postmaster.pid file after the process is
+// confirmed dead. Logs a warning if removal fails.
+func removeStalePIDFile(key string, pidFile string) {
+	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
+		slog.Warn("could not remove stale postmaster.pid", "key", key, "path", pidFile, "error", err)
 	}
 }
 

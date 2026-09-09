@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -43,6 +44,12 @@ var (
 	// consuming applications to block in WaitForGracefulShutdown until
 	// all cleanup (pool closing, embedded Postgres stop) has finished.
 	shutdownDone = make(chan struct{})
+
+	// shuttingDown is set to true when gracefulShutdown begins its
+	// snapshot-and-clear cycle. Connect() checks this flag to refuse
+	// new embedded instance registrations after shutdown has started,
+	// closing the straggler window.
+	shuttingDown atomic.Bool
 )
 
 type embeddedInstance struct {
@@ -148,6 +155,7 @@ func gracefulShutdown() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-ch
+	shuttingDown.Store(true)
 	slog.Info("received shutdown signal, closing database pools", "signal", sig)
 
 	// Close connection pools first so they can cleanly drain before the DB servers stop.
@@ -232,15 +240,17 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 			}
 		}()
 
+		stopTimer := time.NewTimer(stopTimeout)
 		select {
 		case err := <-stopErr:
+			stopTimer.Stop()
 			if err != nil {
 				slog.Warn("graceful stop failed, will attempt force-kill", "key", key, "error", err)
 			} else {
 				slog.Info("gracefully stopped embedded Postgres", "key", key, "elapsed", time.Since(start))
 				stopSucceeded = true
 			}
-		case <-time.After(stopTimeout):
+		case <-stopTimer.C:
 			slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout, "elapsed", time.Since(start))
 		}
 	}
@@ -363,6 +373,9 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	var effectiveDataPath string // tracks the data path for error-cleanup force-kill
 
 	if IsEmbeddedPostgres(dbURL) {
+		if shuttingDown.Load() {
+			return nil, fmt.Errorf("embedded Postgres unavailable: shutdown in progress")
+		}
 		slog.Info("'postgres:embedded:' detected — provisioning an embedded Postgres")
 
 		// Parse optional query parameters appended after the prefix.

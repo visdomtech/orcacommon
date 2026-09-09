@@ -3,9 +3,19 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
+
+// ErrNotPostgresProcess is returned when KillEmbeddedPG determines the target
+// PID does not belong to a Postgres process. On Windows this is a stub.
+var ErrNotPostgresProcess = errors.New("pid is not a postgres process")
+
+// IsPostgresProcess is a no-op stub on Windows.
+func IsPostgresProcess(_ int) bool {
+	return false
+}
 
 // IsDataPathInitialized is a no-op stub on Windows.
 // The embedded postgres utilities rely on POSIX signals and are not available on Windows.

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/visdomtech/orcacommon/compare/v0.5.0...v0.6.0) (2026-09-10)
+
+
+### Features
+
+* **litespaserver:** add thread-safe SetCSP for hot-reload of CSP config ([b436a49](https://github.com/visdomtech/orcacommon/commit/b436a495bf2a8b29eae9332ae31049b4dfca75b8))
+
+
+### Bug Fixes
+
+* **postgres:** force-kill embedded postgres on graceful shutdown failure ([#16](https://github.com/visdomtech/orcacommon/issues/16)) ([67bd3cd](https://github.com/visdomtech/orcacommon/commit/67bd3cd9d0fdeca280d68c4bef31816f0e7c2140))
+
 ## [0.5.0](https://github.com/visdomtech/orcacommon/compare/v0.4.1...v0.5.0) (2026-09-06)
 
 

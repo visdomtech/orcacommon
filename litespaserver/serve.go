@@ -82,6 +82,15 @@ func (s *Server) RefreshVersion(ctx context.Context) {
 // Manager exposes the underlying version manager (e.g. for SetVersion wiring).
 func (s *Server) Manager() *Manager { return s.manager }
 
+// SetCSP replaces the active CSP configuration and flushes the page cache
+// so the next request uses the new policy. Safe for concurrent use.
+func (s *Server) SetCSP(cfg CSPConfig) {
+	s.mu.Lock()
+	s.csp = cfg
+	s.mu.Unlock()
+	s.FlushCache()
+}
+
 // FlushCache invalidates the in-memory index.html cache. Called via Manager.OnChange
 // so that a version update automatically evicts stale cached pages.
 func (s *Server) FlushCache() {
@@ -196,8 +205,11 @@ func (s *Server) setBaseHeaders(w http.ResponseWriter, nonce string) {
 	h.Set("X-Frame-Options", "SAMEORIGIN")
 	h.Set("Referrer-Policy", "origin-when-cross-origin")
 	h.Set("X-Content-Type-Options", "nosniff")
-	if !s.csp.Disable && !s.csp.DisableAppendNonce {
-		h.Set("Content-Security-Policy", cspRule(s.csp, nonce))
+	s.mu.Lock()
+	csp := s.csp
+	s.mu.Unlock()
+	if !csp.Disable && !csp.DisableAppendNonce {
+		h.Set("Content-Security-Policy", cspRule(csp, nonce))
 	}
 }
 

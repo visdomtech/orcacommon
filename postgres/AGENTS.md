@@ -56,9 +56,21 @@ Atlas-based migration runner:
 - **Baseline** — when `IsBaseline` returns true, the first migration is recorded without executing SQL.
 
 ### Graceful Shutdown (`pool.go`)
-`init()` launches `gracefulShutdown()` goroutine. On SIGTERM/SIGINT:
+`init()` launches `gracefulShutdown()` goroutine. Consuming apps MUST call
+`WaitForGracefulShutdown()` at the end of `main()` to block until cleanup completes.
+On SIGTERM/SIGINT:
 1. Close all keyed pools (drain connections).
-2. Stop all embedded Postgres instances.
+2. Snapshot the embedded PG map under lock, then stop instances in parallel (WaitGroup) outside the lock.
+3. Each instance goes through `stopWithForceKill` (three-tier strategy):
+   - SIGTERM sent directly to Postgres PID (via postmaster.pid) for instant shutdown initiation.
+   - `pg.Stop()` (pg_ctl smart mode) with a configurable `stopTimeout` (default 15s); returns quickly since PG is already stopping. Skipped for reused instances (pg == nil).
+   - If stop fails or hangs, the timeout triggers.
+   - After stop, the postmaster.pid PID is verified via `CheckPIDFile`.
+   - If the process is still alive, `utils.KillEmbeddedPG(pid)` sends SIGKILL.
+   - After confirmed kill, the stale `postmaster.pid` is removed.
+   - `stopWithForceKill` is reused by Connect() for instance replacement and error-cleanup paths.
+4. Closes `shutdownDone` channel to unblock `WaitForGracefulShutdown()`.
+5. Logs shutdown duration on completion.
 
 ## Configuration
 

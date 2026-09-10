@@ -136,10 +136,11 @@ func TestConnect_TCPrefix_CleanupTerminates(t *testing.T) {
 	}
 }
 
-func TestConnect_EmbeddedPrefix(t *testing.T) {
+func TestConnect_Embedded_WithTempDataPath(t *testing.T) {
 	ctx := context.Background()
+	dataPath := t.TempDir()
 
-	pool, err := Connect(ctx, "postgres:embedded:", "test-embedded")
+	pool, err := Connect(ctx, "postgres:embedded:?datapath="+url.QueryEscape(dataPath), "test-embed-datapath")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -148,25 +149,53 @@ func TestConnect_EmbeddedPrefix(t *testing.T) {
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
+
+	// Verify the data path was actually used by embedded postgres.
+	entries, err := os.ReadDir(dataPath)
+	if err != nil {
+		t.Fatalf("read dataPath: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected dataPath to contain postgres data files, but it was empty")
+	}
 }
 
-func TestConnect_EmbeddedPrefix_CleanupTerminates(t *testing.T) {
+func TestConnect_Embedded_PoolCloseTerminates(t *testing.T) {
 	ctx := context.Background()
+	dataPath := t.TempDir()
 
-	pool, err := Connect(ctx, "postgres:embedded:", "test-embedded-cleanup")
+	pool, err := Connect(ctx, "postgres:embedded:?datapath="+url.QueryEscape(dataPath), "test-embed-close")
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		t.Fatalf("ping before cleanup: %v", err)
+		t.Fatalf("ping before close: %v", err)
 	}
 
 	pool.Close()
 
+	// After Close(), ping must fail.
 	if err := pool.Ping(ctx); err == nil {
 		t.Fatal("expected ping to fail after pool.Close(), but it succeeded")
+	}
+}
+
+func TestConnect_Embedded_AutoDataPath(t *testing.T) {
+	// When no datapath is provided, Connect should create a temp directory
+	// automatically. The pool must still work and the instance must be
+	// tracked for graceful shutdown.
+	ctx := context.Background()
+
+	pool, err := Connect(ctx, "postgres:embedded:", "test-embed-autopath")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
 	}
 }
 
@@ -220,30 +249,6 @@ func TestOpenPool_Singleton(t *testing.T) {
 	}
 	if err := p1.Ping(ctx); err != nil {
 		t.Fatalf("ping: %v", err)
-	}
-}
-
-func TestConnect_EmbeddedPrefix_WithDataPath(t *testing.T) {
-	ctx := context.Background()
-	dataPath := t.TempDir()
-
-	pool, err := Connect(ctx, "postgres:embedded:?datapath="+url.QueryEscape(dataPath), "test-embedded-datapath")
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	defer pool.Close()
-
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-
-	// Verify the data path was actually used by embedded postgres.
-	entries, err := os.ReadDir(dataPath)
-	if err != nil {
-		t.Fatalf("read dataPath: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatal("expected dataPath to contain postgres data files, but it was empty")
 	}
 }
 

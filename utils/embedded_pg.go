@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -161,6 +162,100 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 
 	slog.Info("detected reusable embedded Postgres", "dataPath", dataPath, "port", existingPort)
 	return true, existingPort
+}
+
+// ErrNotPostgresProcess is returned by KillEmbeddedPG when the target PID
+// does not appear to be a Postgres process. Callers can use errors.Is to
+// distinguish "skipped because not postgres" from other kill failures.
+var ErrNotPostgresProcess = errors.New("pid is not a postgres process")
+
+// KillEmbeddedPG sends SIGKILL to the process identified by pid and waits for
+// it to terminate. This is a last-resort fallback used when pg_ctl stop fails
+// or times out during graceful shutdown. Before sending the signal, it
+// verifies the target process is a Postgres process to avoid killing an
+// unrelated process that may have reused the PID.
+//
+// Returns ErrNotPostgresProcess when the target PID is dead or does not appear
+// to be a Postgres process (callers should treat this as "nothing to kill").
+// Use errors.Is to distinguish from other kill failures.
+func KillEmbeddedPG(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("invalid pid: %d", pid)
+	}
+	// Verify the target process is actually a Postgres process before
+	// sending SIGKILL. This guards against PID reuse after the original
+	// process has exited.
+	if !IsPostgresProcess(pid) {
+		slog.Warn("pid does not appear to be a Postgres process, skipping kill", "pid", pid)
+		return ErrNotPostgresProcess
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find process %d: %w", pid, err)
+	}
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		// Process may have already exited — treat "no such process" and
+		// "process already finished" as success.
+		if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return fmt.Errorf("send SIGKILL to pid %d: %w", pid, err)
+	}
+	// Poll until the process is reaped or we time out (~5s total).
+	// Exponential backoff: starts at 25ms, caps at 500ms per iteration.
+	delay := 25 * time.Millisecond
+	for i := 0; i < 20; i++ {
+		if !IsProcessAlive(pid) {
+			return nil
+		}
+		// Attempt non-blocking waitpid: if we are the parent, this reaps
+		// the zombie and the next Signal(0) will return ESRCH.
+		// When we are NOT the parent (e.g., process re-parented to init),
+		// Wait4 returns ECHILD and wpid == 0 — the loop relies on
+		// IsProcessAlive instead.
+		if wpid, _ := syscall.Wait4(pid, nil, syscall.WNOHANG, nil); wpid == pid {
+			return nil
+		}
+		time.Sleep(delay)
+		if delay < 500*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return fmt.Errorf("pid %d still alive after SIGKILL", pid)
+}
+
+// IsPostgresProcess checks whether the process identified by pid is a
+// Postgres process by inspecting its command name. This guards against
+// PID reuse when force-killing embedded Postgres instances.
+// Exported so that the postgres package can apply the same guard before
+// sending SIGTERM via sendPostgresSIGTERM.
+func IsPostgresProcess(pid int) bool {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		// Process may have exited between CheckPIDFile and here — treat as
+		// not a postgres process (nothing to kill).
+		return false
+	}
+	// Use filepath.Base to normalize macOS full-path output (e.g.,
+	// /usr/local/bin/postgres → postgres) and avoid matching utility
+	// processes like pg_ctl, pg_dump, pg_restore.
+	comm := filepath.Base(strings.TrimSpace(string(out)))
+	lower := strings.ToLower(comm)
+	return lower == "postgres" || lower == "postmaster"
+}
+
+// IsProcessAlive reports whether a process with the given pid exists and is
+// reachable via Signal(0). On Unix, os.FindProcess always succeeds, so the
+// Signal(0) probe is the real liveness check.
+func IsProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
 }
 
 // parsePostmasterInfo reads the PID (line 1) and port (line 4) from the

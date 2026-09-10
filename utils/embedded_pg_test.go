@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -294,6 +295,90 @@ func TestIsEmbeddedPGRunning(t *testing.T) {
 		result := IsEmbeddedPGRunning(tmpDir)
 		if result {
 			t.Error("IsEmbeddedPGRunning() = true when no PID file, want false")
+		}
+	})
+}
+
+func TestKillEmbeddedPG(t *testing.T) {
+	t.Run("refuses to kill non-postgres process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		defer func() {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}()
+		pid := cmd.Process.Pid
+		if !IsProcessAlive(pid) {
+			t.Fatal("child process should be alive before kill attempt")
+		}
+		// KillEmbeddedPG should detect that "sleep" is not a postgres
+		// process and refuse to send SIGKILL, returning ErrNotPostgresProcess.
+		err := KillEmbeddedPG(pid)
+		if !errors.Is(err, ErrNotPostgresProcess) {
+			t.Fatalf("KillEmbeddedPG should return ErrNotPostgresProcess for non-postgres process, got: %v", err)
+		}
+		// The process should still be alive since the kill was refused.
+		if !IsProcessAlive(pid) {
+			t.Error("non-postgres process should still be alive after KillEmbeddedPG refusal")
+		}
+	})
+
+	t.Run("returns ErrNotPostgresProcess for already dead process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		deadPID := cmd.Process.Pid
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+
+		// A dead process cannot be identified as postgres, so KillEmbeddedPG
+		// returns ErrNotPostgresProcess (safe no-op).
+		err := KillEmbeddedPG(deadPID)
+		if !errors.Is(err, ErrNotPostgresProcess) {
+			t.Fatalf("KillEmbeddedPG on dead process: expected ErrNotPostgresProcess, got: %v", err)
+		}
+	})
+
+	t.Run("returns error for invalid pid", func(t *testing.T) {
+		if err := KillEmbeddedPG(0); err == nil {
+			t.Error("expected error for pid 0")
+		}
+		if err := KillEmbeddedPG(-1); err == nil {
+			t.Error("expected error for pid -1")
+		}
+	})
+}
+
+func TestIsProcessAlive(t *testing.T) {
+	t.Run("returns true for current process", func(t *testing.T) {
+		if !IsProcessAlive(os.Getpid()) {
+			t.Error("IsProcessAlive should return true for current process")
+		}
+	})
+
+	t.Run("returns false for dead process", func(t *testing.T) {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start child: %v", err)
+		}
+		deadPID := cmd.Process.Pid
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+
+		if IsProcessAlive(deadPID) {
+			t.Error("IsProcessAlive should return false for dead process")
+		}
+	})
+
+	t.Run("returns false for zero and negative pid", func(t *testing.T) {
+		if IsProcessAlive(0) {
+			t.Error("IsProcessAlive(0) should return false")
+		}
+		if IsProcessAlive(-1) {
+			t.Error("IsProcessAlive(-1) should return false")
 		}
 	})
 }

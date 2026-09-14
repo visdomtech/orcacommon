@@ -31,3 +31,6 @@ go.work.sum
 .idea/
 .vscode/
 .qoder
+
+# E2E server binary
+e2eserver

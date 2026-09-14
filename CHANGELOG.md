@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/visdomtech/orcacommon/compare/v0.6.0...v0.7.0) (2026-09-14)
+
+
+### Features
+
+* **ephemeralauth:** ephemeral token auth ([#18](https://github.com/visdomtech/orcacommon/issues/18)) ([bd2d333](https://github.com/visdomtech/orcacommon/commit/bd2d333c7e10f1adfb78f4633aa6b45492fd9901))
+
 ## [0.6.0](https://github.com/visdomtech/orcacommon/compare/v0.5.0...v0.6.0) (2026-09-10)
 
 

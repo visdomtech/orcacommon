@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/visdomtech/orcacommon/ephemeralauth"
 )
 
 // nonceLength is the per-request CSP nonce length.
@@ -40,6 +41,13 @@ type Server struct {
 	mu         sync.Mutex
 	indexCache map[string]string
 	sf         singleflight.Group
+
+	// Ephemeral auth fields (nil when PublicAuth is not configured).
+	guestMiddleware  func(http.Handler) http.Handler
+	issuer           *ephemeralauth.Issuer
+	issuanceHandler  http.Handler
+	publicAuthCfg    *ephemeralauth.Config
+	wrappedServeRoot http.Handler // cached guest-middleware-wrapped serveRootInner
 }
 
 // NewServer builds a Server from the provided Config. pool is used for the
@@ -47,7 +55,7 @@ type Server struct {
 // cfg.EmbeddedContent is set).
 func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 	embedded := resolveEmbedded(cfg.EmbeddedContent)
-	return &Server{
+	s := &Server{
 		cdn:        cfg.CDNPrefix,
 		embedded:   embedded,
 		csp:        cfg.CSP,
@@ -56,6 +64,34 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 		fetcher:    newFetcher(nil),
 		indexCache: make(map[string]string),
 	}
+
+	// Wire ephemeral auth when configured.
+	if cfg.PublicAuth != nil {
+		s.publicAuthCfg = cfg.PublicAuth
+		signingKey := []byte(cfg.PublicAuth.SigningKey)
+		s.guestMiddleware = ephemeralauth.GuestSession(signingKey)
+		s.issuer = cfg.PublicAuth.Issuer()
+
+		// Build the bot verifier: use Turnstile if secret is configured,
+		// otherwise the consumer must provide one externally.
+		var verifier ephemeralauth.BotVerifier
+		if cfg.PublicAuth.TurnstileSecret != "" {
+			verifier = ephemeralauth.NewTurnstileVerifier(cfg.PublicAuth.TurnstileSecret)
+		}
+		if verifier != nil {
+			s.issuanceHandler = ephemeralauth.IssuanceHandler(*cfg.PublicAuth, verifier, s.issuer)
+		} else {
+			slog.Warn("litespaserver: PublicAuth is configured but TurnstileSecret is empty; " +
+				"PublicAuthHandler() will return nil")
+		}
+	}
+
+	// Cache the guest-middleware-wrapped handler to avoid per-request closure allocations.
+	if s.guestMiddleware != nil {
+		s.wrappedServeRoot = s.guestMiddleware(http.HandlerFunc(s.serveRootInner))
+	}
+
+	return s
 }
 
 // resolveEmbedded validates the caller-supplied fs.FS. Returns nil when no
@@ -101,8 +137,20 @@ func (s *Server) FlushCache() {
 
 // ServeRoot handles a request for the SPA root or a static file. JSON requests
 // get a 404, static files are proxied from the CDN, and everything else serves
-// index.html with a fresh CSP nonce.
+// index.html with a fresh CSP nonce. When PublicAuth is configured, the guest
+// session middleware is applied to set/refresh the guest cookie.
 func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
+	// Apply cached guest session middleware when ephemeral auth is configured.
+	if s.wrappedServeRoot != nil {
+		s.wrappedServeRoot.ServeHTTP(w, r)
+		return
+	}
+	s.serveRootInner(w, r)
+}
+
+// serveRootInner is the core ServeRoot logic, called directly or through
+// the guest session middleware wrapper.
+func (s *Server) serveRootInner(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// JSON callers do not want HTML; return 404.
@@ -236,4 +284,22 @@ func (s *Server) indexStore(version, body string) {
 // with the per-request nonce value.
 func injectNonce(body, nonce string) string {
 	return strings.Replace(body, `nonce="NONCE"`, `nonce="`+nonce+`"`, 1)
+}
+
+// PublicAuthHandler returns the ephemeral token issuance handler
+// (POST /api/auth/ephemeral-token) when PublicAuth is configured.
+// Returns nil when PublicAuth is not set.
+func (s *Server) PublicAuthHandler() http.Handler {
+	return s.issuanceHandler
+}
+
+// PublicAuthMiddleware returns the protection middleware for guarding
+// public API routes when PublicAuth is configured.
+// Returns nil when PublicAuth is not set.
+func (s *Server) PublicAuthMiddleware() func(http.Handler) http.Handler {
+	if s.publicAuthCfg == nil || s.issuer == nil {
+		return nil
+	}
+	signingKey := []byte(s.publicAuthCfg.SigningKey)
+	return ephemeralauth.Protect(s.issuer, signingKey, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
 }

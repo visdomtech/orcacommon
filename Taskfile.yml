@@ -1,0 +1,64 @@
+# https://taskfile.dev
+
+version: '3'
+
+tasks:
+  e2e:
+    desc: Run e2e tests (start server, run tests, stop server)
+    deps: [e2e:stop-server]
+    cmds:
+      - defer: { task: e2e:stop-server }
+      - task: e2e:start-server
+      - task: e2e:wait-for-server
+      - go test -race -tags=e2e -count=1 -v ./tests/e2e/crud/...
+      - go test -race -tags=e2e -count=1 -v ./tests/e2e/workflow/...
+      - go test -race -tags=e2e -count=1 -v ./tests/e2e/edgecase/...
+
+  e2e:start-server:
+    internal: true
+    desc: Build and start the e2e server in background
+    cmds:
+      - go build -o /tmp/orcacommon-e2e-server ./cmd/e2eserver/
+      - /tmp/orcacommon-e2e-server &
+    silent: true
+
+  e2e:wait-for-server:
+    internal: true
+    desc: Wait for the e2e server to become ready
+    cmds:
+      - |
+        for i in $(seq 1 300); do
+          if [ -f /tmp/orcacommon-e2e-server.json ]; then
+            BASE_URL=$(grep -o '"base_url":"[^"]*"' /tmp/orcacommon-e2e-server.json | sed 's/"base_url":"//;s/"//' 2>/dev/null || true)
+            if [ -n "$BASE_URL" ] && curl -sf "$BASE_URL/healthz" > /dev/null 2>&1; then
+              echo "e2e server ready at $BASE_URL"
+              exit 0
+            fi
+          fi
+          sleep 0.2
+        done
+        echo "ERROR: e2e server did not start within 60s"
+        exit 1
+
+  e2e:stop-server:
+    internal: true
+    desc: Stop the e2e server
+    cmds:
+      - |
+        if [ -f /tmp/orcacommon-e2e-server.json ]; then
+          # Kill by PID from manifest (avoids pkill -f false positives)
+          PID=$(grep -o '"pid":"[^"]*"' /tmp/orcacommon-e2e-server.json | sed 's/"pid":"//;s/"//' 2>/dev/null || true)
+          if [ -n "$PID" ] && ps -p "$PID" -o args= 2>/dev/null | grep -q 'orcacommon-e2e-server'; then
+            kill "$PID" 2>/dev/null || true
+          fi
+          rm -f /tmp/orcacommon-e2e-server /tmp/orcacommon-e2e-server.json
+        fi
+        # Fallback: kill any stale server binary
+        pkill -f '/tmp/orcacommon-e2e-server' 2>/dev/null || true
+    ignore_error: true
+    silent: true
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test -race ./...

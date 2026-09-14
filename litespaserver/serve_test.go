@@ -1,7 +1,10 @@
 package litespaserver
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
+
+	"github.com/visdomtech/orcacommon/ephemeralauth"
 )
 
 //go:embed testdata/embed
@@ -395,4 +400,206 @@ func TestServeRoot_EmbeddedFS_StaticFallbackToCDN(t *testing.T) {
 	if got := rec.Body.String(); got != "from-cdn" {
 		t.Errorf("body = %q, want from-cdn (CDN fallback)", got)
 	}
+}
+
+func TestServeRoot_PublicAuth_GuestCookieSet(t *testing.T) {
+	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gm := ephemeralauth.GuestSession([]byte("test-signing-key-for-litespa-test"))
+	s := &Server{
+		cdn:      "https://cdn.example",
+		embedded: sub,
+		csp:      CSPConfig{},
+		manager:  &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:   newStaticRetriever(nil, nil),
+		fetcher:  newFetcher(nil),
+		indexCache: make(map[string]string),
+		// Wire guest middleware and its cached wrapper.
+		guestMiddleware: gm,
+		publicAuthCfg: &ephemeralauth.Config{
+			SigningKey: "test-signing-key-for-litespa-test",
+		},
+	}
+	s.wrappedServeRoot = gm(http.HandlerFunc(s.serveRootInner))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	s.ServeRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	// Should have a Set-Cookie for the guest session.
+	var found bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "guest_session" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected guest_session cookie to be set")
+	}
+}
+
+func TestServeRoot_NoPublicAuth_NoGuestCookie(t *testing.T) {
+	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		cdn:        "https://cdn.example",
+		embedded:   sub,
+		csp:        CSPConfig{},
+		manager:    &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:     newStaticRetriever(nil, nil),
+		fetcher:    newFetcher(nil),
+		indexCache: make(map[string]string),
+		// No PublicAuth configured.
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	s.ServeRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	// Should NOT have a guest session cookie.
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "guest_session" {
+			t.Error("guest_session cookie should NOT be set when PublicAuth is nil")
+		}
+	}
+}
+
+func TestPublicAuthHandler_NilWhenNotConfigured(t *testing.T) {
+	s := &Server{
+		indexCache: make(map[string]string),
+	}
+	if s.PublicAuthHandler() != nil {
+		t.Error("PublicAuthHandler() should return nil when not configured")
+	}
+	if s.PublicAuthMiddleware() != nil {
+		t.Error("PublicAuthMiddleware() should return nil when not configured")
+	}
+}
+
+func TestPublicAuthHandler_NonNilWhenConfigured(t *testing.T) {
+	cfg := &ephemeralauth.Config{
+		SigningKey:      "test-key-for-auth-handler-test!!",
+		TokenTTLSeconds: 120,
+		TurnstileSecret: "test-turnstile-secret",
+	}
+	issuer := cfg.Issuer()
+	s := &Server{
+		indexCache:      make(map[string]string),
+		publicAuthCfg:   cfg,
+		issuer:          issuer,
+		issuanceHandler: ephemeralauth.IssuanceHandler(*cfg, ephemeralauth.NewTurnstileVerifier(cfg.TurnstileSecret), issuer),
+	}
+
+	if s.PublicAuthHandler() == nil {
+		t.Error("PublicAuthHandler() should return non-nil when configured")
+	}
+	if s.PublicAuthMiddleware() == nil {
+		t.Error("PublicAuthMiddleware() should return non-nil when configured")
+	}
+}
+
+func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
+	cfg := ephemeralauth.Config{
+		SigningKey:      "super-secret-key",
+		TurnstileSecret: "turnstile-secret-value",
+	}
+	val := cfg.LogValue()
+	str := val.String()
+	if strings.Contains(str, "super-secret-key") {
+		t.Error("signing key leaked in LogValue output")
+	}
+	if strings.Contains(str, "turnstile-secret-value") {
+		t.Error("turnstile secret leaked in LogValue output")
+	}
+	if !strings.Contains(str, "[REDACTED]") {
+		t.Error("expected [REDACTED] in LogValue output")
+	}
+}
+
+func TestPublicAuthMiddleware_RequiredScopes(t *testing.T) {
+	cfg := &ephemeralauth.Config{
+		SigningKey:     "test-key-for-scope-enforcement!!",
+		TokenTTLSeconds: 120,
+		Scopes:         []string{"public:read"},
+		RequiredScopes: []string{"public:read"},
+	}
+	issuer := cfg.Issuer()
+	s := &Server{
+		indexCache:    make(map[string]string),
+		publicAuthCfg: cfg,
+		issuer:        issuer,
+	}
+
+	mw := s.PublicAuthMiddleware()
+	if mw == nil {
+		t.Fatal("PublicAuthMiddleware() returned nil")
+	}
+
+	// Create a token WITHOUT the required scope.
+	signingKey := []byte(cfg.SigningKey)
+	ipHash := ephemeralauth.HashContext(signingKey, "1.2.3.4")
+	uaHash := ephemeralauth.HashContext(signingKey, "TestAgent")
+	token, _, err := issuer.Issue("session-1", ipHash, uaHash, []string{"other:scope"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Build request with token + guest cookie.
+	cookie, _ := makeSessionCookieForTest(t, signingKey)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(cookie)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("User-Agent", "TestAgent")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (missing required scope)", rec.Code)
+	}
+}
+
+// makeSessionCookieForTest creates a valid guest cookie for litespaserver tests.
+func makeSessionCookieForTest(t *testing.T, key []byte) (*http.Cookie, string) {
+	t.Helper()
+	id := make([]byte, 16)
+	for i := range id {
+		id[i] = byte(i)
+	}
+	h := hmacSHA256(id, key)
+	value := encodeB64URL(id) + "." + encodeB64URL(h)
+	return &http.Cookie{
+		Name:  "guest_session",
+		Value: value,
+	}, encodeB64URL(id)
+}
+
+func hmacSHA256(data, key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return mac.Sum(nil)
+}
+
+func encodeB64URL(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
 }

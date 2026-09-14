@@ -72,6 +72,7 @@ litespaserver.Config{
     CSP:             litespaserver.CSPConfig{...},   // optional CSP overrides
     EmbeddedContent: embeddedFS,                     // fs.FS for local dev (bypasses CDN + DB)
     FrontendName:    "admin",                        // namespaces version key for multi-SPA
+    PublicAuth:      &ephemeralauth.Config{...},     // optional ephemeral token auth
 }
 ```
 
@@ -85,3 +86,26 @@ litespaserver.Config{
 ## Prerequisites
 
 Unless `EmbeddedContent` is used, consumers must create the `litespa_settings` table before calling `NewServer`. See `dao.go` for the required DDL.
+
+## Ephemeral Auth Integration (`PublicAuth`)
+
+When `Config.PublicAuth` is set to a non-nil `*ephemeralauth.Config`, the server:
+
+1. **Applies guest session middleware** to `ServeRoot` — SPA page responses automatically set/refresh a `guest_session` HMAC-signed cookie.
+2. **Exposes `PublicAuthHandler()`** — returns the `POST /api/auth/ephemeral-token` issuance handler (nil when not configured).
+3. **Exposes `PublicAuthMiddleware()`** — returns stateless protection middleware enforcing signature, expiry, context binding (session/IP/UA), and `RequiredScopes` (nil when not configured).
+
+Consumer wiring:
+```go
+server := litespaserver.NewServer(ctx, pool, cfg)
+
+// Mount on consumer's router:
+mux.Handle("/api/auth/ephemeral-token", server.PublicAuthHandler())
+mux.Handle("/api/public/*", server.PublicAuthMiddleware()(apiHandler))
+```
+
+When `PublicAuth` is nil, all three methods return nil and `ServeRoot` behavior is unchanged — zero impact on existing consumers.
+
+**Bot verifier:** When `PublicAuth.TurnstileSecret` is non-empty, a `TurnstileVerifier` is constructed automatically. If empty, `PublicAuthHandler()` returns nil (consumer must provide an external verifier via standalone `ephemeralauth` usage).
+
+**Scope enforcement:** Set `PublicAuth.RequiredScopes` to enforce scope checks in `PublicAuthMiddleware()`. When empty, any valid token is accepted.

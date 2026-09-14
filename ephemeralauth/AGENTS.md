@@ -28,11 +28,12 @@ All middleware is `func(http.Handler) http.Handler` — compatible with gorilla/
 
 ```go
 cfg := ephemeralauth.Config{
-    SigningKey:      os.Getenv("EPHEMERAL_SIGNING_KEY"),
-    TokenTTLSeconds: 120,                          // clamped to [60, 180]
-    TurnstileSecret: os.Getenv("EPHEMERAL_TURNSTILE_SECRET"), // optional
-    TrustProxy:      false,                        // read X-Forwarded-For
-    Scopes:          []string{"public:read"},
+    SigningKey:        os.Getenv("EPHEMERAL_SIGNING_KEY"),
+    TokenTTLSeconds:   120,                                   // clamped to [60, 180]
+    TurnstileSecret:   os.Getenv("EPHEMERAL_TURNSTILE_SECRET"),   // optional
+    TurnstileSitekey:  os.Getenv("EPHEMERAL_TURNSTILE_SITEKEY"),  // frontend widget key (public)
+    TrustProxy:        false,                                  // read X-Forwarded-For
+    Scopes:            []string{"public:read"},
 }
 ```
 
@@ -141,9 +142,36 @@ Do NOT retry more than once without user interaction.
 # Unit tests (no external deps)
 go test -race ./ephemeralauth/...
 
+# Integration tests (requires network — hits live Cloudflare API)
+go test -race -tags=integration ./ephemeralauth/...
+
 # All tests
 go test -race ./...
 ```
+
+## Cloudflare Turnstile Dummy Test Keys
+
+For local development and testing, Cloudflare provides official dummy test keys that always produce predictable results against the live siteverify endpoint:
+
+| Constant | Value | Behavior |
+|----------|-------|----------|
+| `TurnstileTestAlwaysPassSitekey` | `1x00000000000000000000AA` | Always passes the challenge |
+| `TurnstileTestAlwaysPassSecret` | `1x0000000000000000000000000000000AA` | Always returns `success: true` |
+| `TurnstileTestAlwaysFailSitekey` | `2x00000000000000000000AB` | Always fails the challenge |
+| `TurnstileTestAlwaysFailSecret` | `2x0000000000000000000000000000000AA` | Always returns `success: false` |
+| `TurnstileTestForcesChallengeSitekey` | `3x00000000000000000000FF` | Forces interactive challenge |
+| `TurnstileTestTokenExpiredSecret` | `3x0000000000000000000000000000000AA` | Returns `timeout-or-duplicate` |
+
+**Development configuration example:**
+```go
+cfg := ephemeralauth.Config{
+    SigningKey:       "dev-signing-key",
+    TurnstileSecret:  ephemeralauth.TurnstileTestAlwaysPassSecret,
+    TurnstileSitekey: ephemeralauth.TurnstileTestAlwaysPassSitekey,
+}
+```
+
+These constants are exported from the package for use in development environments. Never use them in production.
 
 ## Dependencies
 

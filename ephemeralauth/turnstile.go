@@ -33,6 +33,8 @@ const (
 	TurnstileTestAlwaysFailSecret = "2x0000000000000000000000000000000AA"
 
 	// TurnstileTestForcesChallengeSitekey forces an interactive challenge.
+	// No automated integration test exists — this key requires human
+	// interaction to solve the challenge in a browser.
 	TurnstileTestForcesChallengeSitekey = "3x00000000000000000000FF"
 
 	// TurnstileTestTokenExpiredSecret returns a timeout-or-duplicate error.

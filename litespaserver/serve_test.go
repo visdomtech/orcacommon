@@ -1,7 +1,10 @@
 package litespaserver
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -526,4 +529,75 @@ func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
 	if !strings.Contains(str, "[REDACTED]") {
 		t.Error("expected [REDACTED] in LogValue output")
 	}
+}
+
+func TestPublicAuthMiddleware_RequiredScopes(t *testing.T) {
+	cfg := &ephemeralauth.Config{
+		SigningKey:     "test-key-for-scope-enforcement!!",
+		TokenTTLSeconds: 120,
+		Scopes:         []string{"public:read"},
+		RequiredScopes: []string{"public:read"},
+	}
+	issuer := cfg.Issuer()
+	s := &Server{
+		indexCache:    make(map[string]string),
+		publicAuthCfg: cfg,
+		issuer:        issuer,
+	}
+
+	mw := s.PublicAuthMiddleware()
+	if mw == nil {
+		t.Fatal("PublicAuthMiddleware() returned nil")
+	}
+
+	// Create a token WITHOUT the required scope.
+	signingKey := []byte(cfg.SigningKey)
+	ipHash := ephemeralauth.HashContext(signingKey, "1.2.3.4")
+	uaHash := ephemeralauth.HashContext(signingKey, "TestAgent")
+	token, _, err := issuer.Issue("session-1", ipHash, uaHash, []string{"other:scope"})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Build request with token + guest cookie.
+	cookie, _ := makeSessionCookieForTest(t, signingKey)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(cookie)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("User-Agent", "TestAgent")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (missing required scope)", rec.Code)
+	}
+}
+
+// makeSessionCookieForTest creates a valid guest cookie for litespaserver tests.
+func makeSessionCookieForTest(t *testing.T, key []byte) (*http.Cookie, string) {
+	t.Helper()
+	id := make([]byte, 16)
+	for i := range id {
+		id[i] = byte(i)
+	}
+	h := hmacSHA256(id, key)
+	value := encodeB64URL(id) + "." + encodeB64URL(h)
+	return &http.Cookie{
+		Name:  "guest_session",
+		Value: value,
+	}, encodeB64URL(id)
+}
+
+func hmacSHA256(data, key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return mac.Sum(nil)
+}
+
+func encodeB64URL(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
 }

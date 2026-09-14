@@ -293,5 +293,5 @@ func (s *Server) PublicAuthMiddleware() func(http.Handler) http.Handler {
 		return nil
 	}
 	signingKey := []byte(s.publicAuthCfg.SigningKey)
-	return ephemeralauth.Protect(s.issuer, signingKey, s.publicAuthCfg.TrustProxy)
+	return ephemeralauth.Protect(s.issuer, signingKey, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
 }

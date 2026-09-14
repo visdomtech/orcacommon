@@ -171,3 +171,23 @@ func TestIssuance_GetMethod_405(t *testing.T) {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
+
+func TestIssuance_OversizedBody_400(t *testing.T) {
+	cfg := newTestConfig()
+	handler := IssuanceHandler(cfg, &stubVerifier{pass: true}, cfg.Issuer())
+
+	// Send a body larger than the 1KB limit.
+	bigBody := make([]byte, 2048)
+	for i := range bigBody {
+		bigBody[i] = 'A'
+	}
+	req := httptest.NewRequest("POST", "/api/auth/ephemeral-token",
+		bytes.NewReader(bigBody))
+	req.AddCookie(makeGuestCookie(t, []byte(cfg.SigningKey)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for oversized body", rec.Code)
+	}
+}

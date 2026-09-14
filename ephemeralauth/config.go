@@ -33,6 +33,11 @@ type Config struct {
 	// Scopes is the default scope list issued to new tokens.
 	// Default: ["public:read"]. Env: EPHEMERAL_SCOPES.
 	Scopes []string `env:"EPHEMERAL_SCOPES"`
+
+	// RequiredScopes is the list of scopes that must be present in a token
+	// for the protection middleware to allow the request through. When empty,
+	// any valid token is accepted. Env: EPHEMERAL_REQUIRED_SCOPES.
+	RequiredScopes []string `env:"EPHEMERAL_REQUIRED_SCOPES"`
 }
 
 // TTL returns the configured TTL as a time.Duration, clamped to [60s, 180s].
@@ -81,5 +86,6 @@ func (c Config) LogValue() slog.Value {
 		slog.String("turnstile_sitekey", c.TurnstileSitekey), // public key, not redacted
 		slog.Bool("trust_proxy", c.TrustProxy),
 		slog.Any("scopes", c.Scopes),
+		slog.Any("required_scopes", c.RequiredScopes),
 	)
 }

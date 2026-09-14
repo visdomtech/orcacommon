@@ -34,7 +34,8 @@ func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Hand
 			return
 		}
 
-		// Parse the bot token from the request body.
+		// Parse the bot token from the request body (limit to 1KB).
+		r.Body = http.MaxBytesReader(w, r.Body, 1024)
 		var req issuanceRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.BotToken == "" {
 			http.Error(w, "bad request: bot_token required", http.StatusBadRequest)
@@ -86,6 +87,9 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
+	}
+	if host == "" {
+		return "unknown"
 	}
 	return host
 }

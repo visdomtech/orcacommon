@@ -11,7 +11,11 @@
 // See dao.go for the required DDL.
 package litespaserver
 
-import "io/fs"
+import (
+	"io/fs"
+
+	"github.com/visdomtech/orcacommon/ephemeralauth"
+)
 
 // Config captures all caller-specific values needed to serve a CDN-hosted SPA.
 // The caller resolves environment-specific defaults (prod vs dev) before
@@ -50,6 +54,12 @@ type Config struct {
 	// the key is "frontend.version". When non-empty, the key becomes
 	// "frontend.version.<FrontendName>".
 	FrontendName string
+
+	// PublicAuth, when non-nil, enables ephemeral token authentication:
+	// the guest-session middleware is applied to SPA page responses, and
+	// the server exposes PublicAuthHandler() and PublicAuthMiddleware()
+	// for the consumer to mount on their own router.
+	PublicAuth *ephemeralauth.Config
 }
 
 // CSPConfig parameterises the Content-Security-Policy source allow-lists.

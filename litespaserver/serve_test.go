@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
+
+	"github.com/visdomtech/orcacommon/ephemeralauth"
 )
 
 //go:embed testdata/embed
@@ -394,5 +396,134 @@ func TestServeRoot_EmbeddedFS_StaticFallbackToCDN(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "from-cdn" {
 		t.Errorf("body = %q, want from-cdn (CDN fallback)", got)
+	}
+}
+
+func TestServeRoot_PublicAuth_GuestCookieSet(t *testing.T) {
+	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		cdn:      "https://cdn.example",
+		embedded: sub,
+		csp:      CSPConfig{},
+		manager:  &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:   newStaticRetriever(nil, nil),
+		fetcher:  newFetcher(nil),
+		indexCache: make(map[string]string),
+		// Wire guest middleware.
+		guestMiddleware: ephemeralauth.GuestSession([]byte("test-signing-key-for-litespa-test")),
+		publicAuthCfg: &ephemeralauth.Config{
+			SigningKey: "test-signing-key-for-litespa-test",
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	s.ServeRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	// Should have a Set-Cookie for the guest session.
+	var found bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "guest_session" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected guest_session cookie to be set")
+	}
+}
+
+func TestServeRoot_NoPublicAuth_NoGuestCookie(t *testing.T) {
+	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		cdn:        "https://cdn.example",
+		embedded:   sub,
+		csp:        CSPConfig{},
+		manager:    &Manager{cdn: "https://cdn.example", provider: &staticProvider{v: "embedded"}},
+		static:     newStaticRetriever(nil, nil),
+		fetcher:    newFetcher(nil),
+		indexCache: make(map[string]string),
+		// No PublicAuth configured.
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	s.ServeRoot(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	// Should NOT have a guest session cookie.
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "guest_session" {
+			t.Error("guest_session cookie should NOT be set when PublicAuth is nil")
+		}
+	}
+}
+
+func TestPublicAuthHandler_NilWhenNotConfigured(t *testing.T) {
+	s := &Server{
+		indexCache: make(map[string]string),
+	}
+	if s.PublicAuthHandler() != nil {
+		t.Error("PublicAuthHandler() should return nil when not configured")
+	}
+	if s.PublicAuthMiddleware() != nil {
+		t.Error("PublicAuthMiddleware() should return nil when not configured")
+	}
+}
+
+func TestPublicAuthHandler_NonNilWhenConfigured(t *testing.T) {
+	cfg := &ephemeralauth.Config{
+		SigningKey:      "test-key-for-auth-handler-test!!",
+		TokenTTLSeconds: 120,
+		TurnstileSecret: "test-turnstile-secret",
+	}
+	issuer := cfg.Issuer()
+	s := &Server{
+		indexCache:      make(map[string]string),
+		publicAuthCfg:   cfg,
+		issuer:          issuer,
+		issuanceHandler: ephemeralauth.IssuanceHandler(*cfg, ephemeralauth.NewTurnstileVerifier(cfg.TurnstileSecret), issuer),
+	}
+
+	if s.PublicAuthHandler() == nil {
+		t.Error("PublicAuthHandler() should return non-nil when configured")
+	}
+	if s.PublicAuthMiddleware() == nil {
+		t.Error("PublicAuthMiddleware() should return non-nil when configured")
+	}
+}
+
+func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
+	cfg := ephemeralauth.Config{
+		SigningKey:      "super-secret-key",
+		TurnstileSecret: "turnstile-secret-value",
+	}
+	val := cfg.LogValue()
+	str := val.String()
+	if strings.Contains(str, "super-secret-key") {
+		t.Error("signing key leaked in LogValue output")
+	}
+	if strings.Contains(str, "turnstile-secret-value") {
+		t.Error("turnstile secret leaked in LogValue output")
+	}
+	if !strings.Contains(str, "[REDACTED]") {
+		t.Error("expected [REDACTED] in LogValue output")
 	}
 }

@@ -27,15 +27,15 @@ tasks:
     desc: Wait for the e2e server to become ready
     cmds:
       - |
-        for i in $(seq 1 60); do
+        for i in $(seq 1 300); do
           if [ -f /tmp/orcacommon-e2e-server.json ]; then
-            BASE_URL=$(cat /tmp/orcacommon-e2e-server.json | python3 -c 'import sys,json; print(json.load(sys.stdin)["base_url"])' 2>/dev/null || true)
+            BASE_URL=$(grep -o '"base_url":"[^"]*"' /tmp/orcacommon-e2e-server.json | sed 's/"base_url":"//;s/"//' 2>/dev/null || true)
             if [ -n "$BASE_URL" ] && curl -sf "$BASE_URL/healthz" > /dev/null 2>&1; then
               echo "e2e server ready at $BASE_URL"
               exit 0
             fi
           fi
-          sleep 1
+          sleep 0.2
         done
         echo "ERROR: e2e server did not start within 60s"
         exit 1
@@ -46,10 +46,15 @@ tasks:
     cmds:
       - |
         if [ -f /tmp/orcacommon-e2e-server.json ]; then
-          # Find and kill the e2e server process
-          pkill -f '/tmp/orcacommon-e2e-server' 2>/dev/null || true
+          # Kill by PID from manifest (avoids pkill -f false positives)
+          PID=$(grep -o '"pid":"[^"]*"' /tmp/orcacommon-e2e-server.json | sed 's/"pid":"//;s/"//' 2>/dev/null || true)
+          if [ -n "$PID" ]; then
+            kill "$PID" 2>/dev/null || true
+          fi
           rm -f /tmp/orcacommon-e2e-server /tmp/orcacommon-e2e-server.json
         fi
+        # Fallback: kill any stale server binary
+        pkill -f '/tmp/orcacommon-e2e-server' 2>/dev/null || true
     ignore_error: true
     silent: true
 

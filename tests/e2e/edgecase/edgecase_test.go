@@ -22,11 +22,8 @@ func TestEdge_TamperedCookieValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	harness.AssertStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (server recovers)", resp.StatusCode)
-	}
 
 	// A new valid cookie should be issued.
 	cookie := harness.GetCookie(resp, "guest_session")
@@ -55,11 +52,8 @@ func TestEdge_CookieFromDifferentSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/public/data: %v", err)
 	}
+	harness.AssertStatus(t, resp2, http.StatusForbidden)
 	resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (session mismatch)", resp2.StatusCode)
-	}
 }
 
 // --- Token Security ---
@@ -72,11 +66,8 @@ func TestEdge_ExpiredToken(t *testing.T) {
 	expiredJWT := harness.CraftJWT(t, []byte(harness.SigningKey), `{"alg":"HS256","typ":"JWT"}`, payload)
 
 	resp := stack.AuthRequest(t, "/api/public/data", expiredJWT, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 func TestEdge_AlgorithmNone(t *testing.T) {
@@ -86,11 +77,8 @@ func TestEdge_AlgorithmNone(t *testing.T) {
 	noneJWT := harness.CraftJWTNoSig(header, payload)
 
 	resp := stack.AuthRequest(t, "/api/public/data", noneJWT, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 (alg=none rejected)", resp.StatusCode)
-	}
 }
 
 func TestEdge_RS256Confusion(t *testing.T) {
@@ -100,20 +88,14 @@ func TestEdge_RS256Confusion(t *testing.T) {
 	rs256JWT := harness.CraftJWTNoSig(header, payload)
 
 	resp := stack.AuthRequest(t, "/api/public/data", rs256JWT, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 (RS256 rejected)", resp.StatusCode)
-	}
 }
 
 func TestEdge_MalformedJWT(t *testing.T) {
 	resp := stack.AuthRequest(t, "/api/public/data", "not-a-jwt", nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 // --- Binding Violations ---
@@ -127,11 +109,8 @@ func TestEdge_UAMismatch(t *testing.T) {
 	// Use the token with a different User-Agent.
 	resp := stack.AuthRequestWithHeaders(t, "/api/public/data", token,
 		map[string]string{"User-Agent": "DifferentBot/2.0"}, nil)
+	harness.AssertStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (UA mismatch)", resp.StatusCode)
-	}
 }
 
 func TestEdge_IPMismatch(t *testing.T) {
@@ -142,11 +121,8 @@ func TestEdge_IPMismatch(t *testing.T) {
 	// Use the token with a different X-Forwarded-For IP.
 	resp := stack.AuthRequestWithHeaders(t, "/api/public/data", token,
 		map[string]string{"X-Forwarded-For": "10.0.0.2"}, nil)
+	harness.AssertStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (IP mismatch)", resp.StatusCode)
-	}
 }
 
 // --- Turnstile Edge Cases ---
@@ -158,11 +134,8 @@ func TestEdge_TurnstileAlwaysFail(t *testing.T) {
 
 	resp = stack.Do(t, "POST", "/api/auth/ephemeral-token-fail",
 		map[string]string{"bot_token": "dummy-turnstile-token"}, nil)
+	harness.AssertStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
-	}
 }
 
 func TestEdge_TurnstileTokenExpired(t *testing.T) {
@@ -172,11 +145,8 @@ func TestEdge_TurnstileTokenExpired(t *testing.T) {
 
 	resp = stack.Do(t, "POST", "/api/auth/ephemeral-token-expired",
 		map[string]string{"bot_token": "dummy-turnstile-token"}, nil)
+	harness.AssertStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (token-expired key)", resp.StatusCode)
-	}
 }
 
 // --- Protocol Violations ---
@@ -192,42 +162,30 @@ func TestEdge_OversizedBody(t *testing.T) {
 	}
 
 	resp = stack.DoRaw(t, "POST", "/api/auth/ephemeral-token", bigBody, nil)
+	harness.AssertStatus(t, resp, http.StatusBadRequest)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 (oversized body)", resp.StatusCode)
-	}
 }
 
 func TestEdge_WrongMethod(t *testing.T) {
 	// GET on issuance endpoint.
 	resp := stack.Do(t, "GET", "/api/auth/ephemeral-token", nil, nil)
+	harness.AssertStatus(t, resp, http.StatusMethodNotAllowed)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("GET status = %d, want 405", resp.StatusCode)
-	}
 
 	// PUT on issuance endpoint.
 	resp = stack.DoRaw(t, "PUT", "/api/auth/ephemeral-token", []byte(`{"bot_token":"x"}`), nil)
+	harness.AssertStatus(t, resp, http.StatusMethodNotAllowed)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("PUT status = %d, want 405", resp.StatusCode)
-	}
 
 	// DELETE on issuance endpoint.
 	resp = stack.Do(t, "DELETE", "/api/auth/ephemeral-token", nil, nil)
+	harness.AssertStatus(t, resp, http.StatusMethodNotAllowed)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("DELETE status = %d, want 405", resp.StatusCode)
-	}
 }
 
 func TestEdge_EmptyAuthHeader(t *testing.T) {
 	resp := stack.DoWithHeaders(t, "GET", "/api/public/data",
 		map[string]string{"Authorization": ""}, nil, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }

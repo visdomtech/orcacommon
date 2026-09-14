@@ -17,8 +17,8 @@ import (
 )
 
 // Do makes an HTTP request to the e2e server with a JSON body and decodes
-// the response into out (if non-nil). Returns the raw response for header
-// and cookie inspection.
+// the response into out (if non-nil). The caller is always responsible for
+// closing resp.Body. Returns the raw response for header and cookie inspection.
 func (s *Stack) Do(t *testing.T, method, path string, body any, out any) *http.Response {
 	t.Helper()
 	var bodyReader io.Reader
@@ -44,7 +44,6 @@ func (s *Stack) Do(t *testing.T, method, path string, body any, out any) *http.R
 	}
 
 	if out != nil && resp.Body != nil {
-		defer resp.Body.Close()
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
 			t.Fatalf("decode response %s %s: %v", method, path, err)
 		}
@@ -54,6 +53,7 @@ func (s *Stack) Do(t *testing.T, method, path string, body any, out any) *http.R
 }
 
 // DoRaw makes an HTTP request with a raw body (not JSON-encoded).
+// The caller is always responsible for closing resp.Body.
 func (s *Stack) DoRaw(t *testing.T, method, path string, rawBody []byte, out any) *http.Response {
 	t.Helper()
 	var bodyReader io.Reader
@@ -72,7 +72,6 @@ func (s *Stack) DoRaw(t *testing.T, method, path string, rawBody []byte, out any
 	}
 
 	if out != nil && resp.Body != nil {
-		defer resp.Body.Close()
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
 			t.Fatalf("decode response %s %s: %v", method, path, err)
 		}
@@ -82,6 +81,7 @@ func (s *Stack) DoRaw(t *testing.T, method, path string, rawBody []byte, out any
 }
 
 // DoWithHeaders makes an HTTP request with custom headers.
+// The caller is always responsible for closing resp.Body.
 func (s *Stack) DoWithHeaders(t *testing.T, method, path string, headers map[string]string, body any, out any) *http.Response {
 	t.Helper()
 	var bodyReader io.Reader
@@ -110,7 +110,6 @@ func (s *Stack) DoWithHeaders(t *testing.T, method, path string, headers map[str
 	}
 
 	if out != nil && resp.Body != nil {
-		defer resp.Body.Close()
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
 			t.Fatalf("decode response %s %s: %v", method, path, err)
 		}
@@ -119,41 +118,16 @@ func (s *Stack) DoWithHeaders(t *testing.T, method, path string, headers map[str
 	return resp
 }
 
-// DoNoCookie makes an HTTP request with a fresh client (no cookie jar),
-// so no guest session cookie is sent. Useful for testing 401 on issuance.
-func (s *Stack) DoNoCookie(t *testing.T, method, path string, body any, out any) *http.Response {
+// AssertStatus fails the test if resp.StatusCode != want, including the
+// response body in the failure message for diagnostics.
+func AssertStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
-	var bodyReader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("marshal body: %v", err)
-		}
-		bodyReader = bytes.NewReader(data)
+	if resp.StatusCode != want {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s %s: status = %d, want %d (body: %s)",
+			resp.Request.Method, resp.Request.URL.Path,
+			resp.StatusCode, want, string(body))
 	}
-
-	req, err := http.NewRequest(method, s.BaseURL+path, bodyReader)
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	client := &http.Client{Timeout: s.Client.Timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("do request %s %s: %v", method, path, err)
-	}
-
-	if out != nil && resp.Body != nil {
-		defer resp.Body.Close()
-		if err := json.NewDecoder(resp.Body).Decode(out); err != nil && err != io.EOF {
-			t.Fatalf("decode response %s %s: %v", method, path, err)
-		}
-	}
-
-	return resp
 }
 
 // GetCookie extracts a named cookie from the response. Returns nil if not found.
@@ -201,10 +175,10 @@ func (s *Stack) GetToken(t *testing.T, issuancePath string) string {
 	resp = s.Do(t, "POST", issuancePath, map[string]string{
 		"bot_token": "dummy-turnstile-token",
 	}, &out)
-	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("POST %s status = %d, want 200", issuancePath, resp.StatusCode)
+		AssertStatus(t, resp, http.StatusOK)
 	}
+	resp.Body.Close()
 	if out.Token == "" {
 		t.Fatalf("POST %s returned empty token", issuancePath)
 	}
@@ -229,11 +203,10 @@ func (s *Stack) GetTokenWithHeaders(t *testing.T, issuancePath string, headers m
 	resp = s.DoWithHeaders(t, "POST", issuancePath, headers, map[string]string{
 		"bot_token": "dummy-turnstile-token",
 	}, &out)
-	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body := ReadBody(t, resp)
-		t.Fatalf("POST %s status = %d, want 200 (body: %s)", issuancePath, resp.StatusCode, body)
+		AssertStatus(t, resp, http.StatusOK)
 	}
+	resp.Body.Close()
 	if out.Token == "" {
 		t.Fatalf("POST %s returned empty token", issuancePath)
 	}

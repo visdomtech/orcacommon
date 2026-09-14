@@ -23,11 +23,9 @@ func TestGuest_CookieSetOnFirstVisit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	harness.AssertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
 
 	cookie := harness.GetCookie(resp, "guest_session")
 	if cookie == nil {
@@ -62,11 +60,9 @@ func TestGuest_ValidCookieAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second GET /: %v", err)
 	}
-	resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp2.StatusCode)
-	}
+	harness.AssertStatus(t, resp2, http.StatusOK)
+	resp2.Body.Close()
 
 	// Cookie should not be re-issued.
 	cookie2 := harness.GetCookie(resp2, "guest_session")
@@ -83,11 +79,9 @@ func TestGuest_TamperedCookieRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (server recovers)", resp.StatusCode)
-	}
+	harness.AssertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
 
 	newCookie := harness.GetCookie(resp, "guest_session")
 	if newCookie == nil {
@@ -136,11 +130,9 @@ func TestIssuance_Success_200(t *testing.T) {
 	var out harness.IssuanceResponse
 	resp = stack.Do(t, "POST", "/api/auth/ephemeral-token",
 		map[string]string{"bot_token": "dummy-turnstile-token"}, &out)
+	harness.AssertStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
 	if out.Token == "" {
 		t.Fatal("token is empty")
 	}
@@ -162,11 +154,8 @@ func TestIssuance_NoCookie_401(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST issuance: %v", err)
 	}
-	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 }
 
 func TestIssuance_MissingBotToken_400(t *testing.T) {
@@ -182,11 +171,8 @@ func TestIssuance_MissingBotToken_400(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST issuance: %v", err)
 	}
-	resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp2.StatusCode)
-	}
+	harness.AssertStatus(t, resp2, http.StatusBadRequest)
 }
 
 func TestIssuance_OversizedBody_400(t *testing.T) {
@@ -199,11 +185,8 @@ func TestIssuance_OversizedBody_400(t *testing.T) {
 		bigBody[i] = 'A'
 	}
 	resp2 := stack.DoRaw(t, "POST", "/api/auth/ephemeral-token", bigBody, nil)
+	harness.AssertStatus(t, resp2, http.StatusBadRequest)
 	resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for oversized body", resp2.StatusCode)
-	}
 }
 
 func TestIssuance_BotVerificationFails_403(t *testing.T) {
@@ -218,20 +201,13 @@ func TestIssuance_BotVerificationFails_403(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST issuance-fail: %v", err)
 	}
-	resp2.Body.Close()
 
-	if resp2.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp2.StatusCode)
-	}
+	harness.AssertStatus(t, resp2, http.StatusForbidden)
 }
 
 func TestIssuance_WrongMethod_405(t *testing.T) {
 	resp := stack.Do(t, "GET", "/api/auth/ephemeral-token", nil, nil)
-	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("status = %d, want 405", resp.StatusCode)
-	}
+	harness.AssertStatus(t, resp, http.StatusMethodNotAllowed)
 }
 
 // --- Protect Middleware Tests ---
@@ -242,11 +218,9 @@ func TestProtect_HappyPath_200(t *testing.T) {
 
 	var data map[string]string
 	resp := stack.AuthRequest(t, "/api/public/data", token, &data)
+	harness.AssertStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
 	if data["data"] != "public" {
 		t.Errorf("data = %q, want %q", data["data"], "public")
 	}
@@ -254,21 +228,15 @@ func TestProtect_HappyPath_200(t *testing.T) {
 
 func TestProtect_NoAuthHeader_401(t *testing.T) {
 	resp := stack.Do(t, "GET", "/api/public/data", nil, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 func TestProtect_MalformedHeader_401(t *testing.T) {
 	resp := stack.DoWithHeaders(t, "GET", "/api/public/data",
 		map[string]string{"Authorization": "Basic dXNlcjpwYXNz"}, nil, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 func TestProtect_ExpiredToken_401(t *testing.T) {
@@ -279,11 +247,8 @@ func TestProtect_ExpiredToken_401(t *testing.T) {
 	expiredJWT := harness.CraftJWT(t, []byte(harness.SigningKey), `{"alg":"HS256","typ":"JWT"}`, payload)
 
 	resp := stack.AuthRequest(t, "/api/public/data", expiredJWT, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 func TestProtect_SessionMismatch_403(t *testing.T) {
@@ -329,34 +294,23 @@ func TestProtect_SessionMismatch_403(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/public/data: %v", err)
 	}
+	harness.AssertStatus(t, resp4, http.StatusForbidden)
 	resp4.Body.Close()
-
-	if resp4.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (session mismatch)", resp4.StatusCode)
-	}
 }
 
 func TestProtect_InsufficientScope_403(t *testing.T) {
 	token := stack.GetToken(t, "/api/auth/ephemeral-token")
-
 	resp := stack.AuthRequest(t, "/api/admin/data", token, nil)
+	harness.AssertStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
-	}
 }
 
 func TestProtect_TamperedToken_401(t *testing.T) {
 	token := stack.GetToken(t, "/api/auth/ephemeral-token")
 	tampered := harness.TamperJWT(token)
-
 	resp := stack.AuthRequest(t, "/api/public/data", tampered, nil)
+	harness.AssertStatus(t, resp, http.StatusUnauthorized)
 	resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
 }
 
 // --- Helpers ---

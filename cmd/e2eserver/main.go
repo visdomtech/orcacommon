@@ -10,7 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -159,22 +159,27 @@ func main() {
 	ts := httptest.NewServer(r)
 	defer ts.Close()
 
-	// Write the manifest.
-	manifest := map[string]string{"base_url": ts.URL}
+	// Write the manifest (0600 — owner-only, prevents local symlink attacks).
+	manifest := map[string]string{
+		"base_url": ts.URL,
+		"pid":      fmt.Sprintf("%d", os.Getpid()),
+	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
-		log.Fatalf("marshal manifest: %v", err)
+		slog.Error("marshal manifest", "error", err)
+		os.Exit(1)
 	}
-	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
-		log.Fatalf("write manifest: %v", err)
+	if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+		slog.Error("write manifest", "error", err)
+		os.Exit(1)
 	}
-	log.Printf("e2e server listening on %s (manifest: %s)", ts.URL, manifestPath)
+	slog.Info("e2e server listening", "base_url", ts.URL, "manifest", manifestPath)
 
 	// Block until signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
-	log.Printf("received %s, shutting down", sig)
+	slog.Info("received signal, shutting down", "signal", sig)
 
 	// Clean up manifest.
 	os.Remove(manifestPath)

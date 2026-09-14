@@ -1,6 +1,6 @@
 # OrcaCommon — Shared Go Library
 
-Shared Go library for Visdom/Orca services. Provides reusable infrastructure: PostgreSQL connection pooling and migrations (Atlas-based, with Cloud SQL and embedded Postgres support), CDN-hosted SPA serving with CSP nonce injection, transactional email via Mailgun, and general-purpose utilities.
+Shared Go library for Visdom/Orca services. Provides reusable infrastructure: PostgreSQL connection pooling and migrations (Atlas-based, with Cloud SQL and embedded Postgres support), CDN-hosted SPA serving with CSP nonce injection, transactional email via Mailgun, ephemeral token authentication for public API endpoints, and general-purpose utilities.
 
 **Module**: `github.com/visdomtech/orcacommon`
 **Go version**: 1.26.4
@@ -12,6 +12,7 @@ Shared Go library for Visdom/Orca services. Provides reusable infrastructure: Po
 ```
 orcacommon/
 ├── email/              Mailgun transactional email sender
+├── ephemeralauth/      Short-lived JWT gating for public API endpoints
 ├── litespaserver/      CDN-hosted SPA server with CSP nonce injection
 ├── postgres/           PostgreSQL pool, migrations (Atlas), Cloud SQL, embedded PG
 └── utils/              Struct↔map conversion, network helpers, embedded PG probes, slog handler
@@ -19,7 +20,7 @@ orcacommon/
 
 All packages are stateless libraries consumed by downstream services. The only process-level side effect is `postgres.init()`, which registers a SIGTERM/SIGINT handler for graceful pool and embedded-PG shutdown.
 
-> **Internal dependency:** `postgres/` imports `utils/` (for embedded-PG probes and `GetFreePort`). All other packages are independent.
+> **Internal dependencies:** `postgres/` imports `utils/` (for embedded-PG probes and `GetFreePort`). `litespaserver/` imports `ephemeralauth/` (when `PublicAuth` config is set). All other packages are independent.
 
 ---
 
@@ -29,15 +30,19 @@ All packages are stateless libraries consumed by downstream services. The only p
 * **Responsibility**: Mailgun-backed transactional email sender. `Sender` interface for mock injection, `MailgunClient` with connection pooling, file attachments (≤ 10 MB), CC/BCC support.
 * **Path**: `email/`
 
-### 2. [Lite SPA Server](litespaserver/AGENTS.md)
-* **Responsibility**: Serves a CDN-hosted single-page app — resolves the live frontend version (locked via env, DB-backed, or embedded FS), proxies `index.html` + an allow-list of static files from the CDN, and injects a per-request CSP nonce.
+### 2. [Ephemeral Auth](ephemeralauth/AGENTS.md)
+* **Responsibility**: Short-lived (≤180s) stateless JWT gating for public API endpoints. Guest session cookies, token issuance with bot verification (Turnstile), and stateless protection middleware — all gorilla/mux-compatible.
+* **Path**: `ephemeralauth/`
+
+### 3. [Lite SPA Server](litespaserver/AGENTS.md)
+* **Responsibility**: Serves a CDN-hosted single-page app — resolves the live frontend version (locked via env, DB-backed, or embedded FS), proxies `index.html` + an allow-list of static files from the CDN, and injects a per-request CSP nonce. Optional `PublicAuth` integration auto-wires guest session middleware.
 * **Path**: `litespaserver/`
 
-### 3. [PostgreSQL Utilities](postgres/AGENTS.md)
+### 4. [PostgreSQL Utilities](postgres/AGENTS.md)
 * **Responsibility**: Connection pool management (`pgxpool`), Atlas-based migration runner with advisory locking and baseline support, Cloud SQL connector, embedded Postgres provisioning (`fergusstrange/embedded-postgres`), and TestContainer support.
 * **Path**: `postgres/`
 
-### 4. [Utility Functions](utils/AGENTS.md)
+### 5. [Utility Functions](utils/AGENTS.md)
 * **Responsibility**: Struct↔map conversion (JSON and reflection-based), network helpers (localhost detection, free port allocation, JSON response writer), embedded Postgres process probes (PID file, port liveness), and a split-level `slog.Handler`.
 * **Path**: `utils/`
 

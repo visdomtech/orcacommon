@@ -112,15 +112,9 @@ func TestProtect_BadSignature_401(t *testing.T) {
 	cookie, sessionID := makeSessionCookie(t, testKey)
 	token := issueTestToken(t, testKey, sessionID, "1.2.3.4", "TestAgent", []string{"public:read"}, 120*time.Second)
 
-	// Tamper with the token signature.
+	// Tamper with the token signature by replacing it entirely.
 	parts := splitToken(token)
-	sig := parts[2]
-	if sig[len(sig)-1] == 'A' {
-		sig = sig[:len(sig)-1] + "B"
-	} else {
-		sig = sig[:len(sig)-1] + "A"
-	}
-	tampered := parts[0] + "." + parts[1] + "." + sig
+	tampered := parts[0] + "." + parts[1] + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 	req := httptest.NewRequest("GET", "/api/data", nil)
 	req.Header.Set("Authorization", "Bearer "+tampered)

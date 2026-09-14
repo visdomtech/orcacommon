@@ -45,15 +45,9 @@ func TestToken_TamperedSignatureRejected(t *testing.T) {
 		t.Fatalf("Issue() error: %v", err)
 	}
 
-	// Flip the last character of the signature (after the second dot).
+	// Replace the signature entirely with a fixed bogus value.
 	parts := strings.Split(token, ".")
-	sig := parts[2]
-	if sig[len(sig)-1] == 'A' {
-		sig = sig[:len(sig)-1] + "B"
-	} else {
-		sig = sig[:len(sig)-1] + "A"
-	}
-	tampered := parts[0] + "." + parts[1] + "." + sig
+	tampered := parts[0] + "." + parts[1] + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 	_, err = iss.Verify(tampered)
 	if err == nil {

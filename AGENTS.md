@@ -54,7 +54,7 @@ All packages are stateless libraries consumed by downstream services. The only p
 * The entire module must compile cleanly (`go build ./...`) before committing.
 * Run tests with the race detector: `go test -race ./...`.
 * **Unit tests:** pure Go, no external deps — `go test -race ./...`
-* **Integration tests:** `postgres/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./postgres/...` (requires Docker for TestContainers)
+* **Integration tests:** `postgres/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./postgres/...` (requires Docker for TestContainers). `ephemeralauth/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./ephemeralauth/...` (requires network for live Cloudflare Turnstile API).
 * **Platform-guarded tests:** `utils/embedded_pg_test.go` is excluded on Windows via `//go:build !windows`
 
 ### 2. Dependency Discipline
@@ -65,7 +65,7 @@ All packages are stateless libraries consumed by downstream services. The only p
 ### 3. Configuration Convention
 * Struct tags follow the [caarlos0/env](https://github.com/caarlos0/env) convention (`env:"FIELD_NAME"`).
 * Consuming services are responsible for parsing env vars; this library does not auto-read them.
-* All config structs implement `slog.LogValuer` to redact secrets — currently `DBConfig` (password) and `MailgunConfig` (password). Redact by replacing the value with `"[REDACTED]"`.
+* All config structs implement `slog.LogValuer` to redact secrets — currently `DBConfig` (password), `MailgunConfig` (password), and `ephemeralauth.Config` (signing key, Turnstile secret). Redact by replacing the value with `"[REDACTED]"`.
 
 ### 4. Graceful Shutdown
 * `postgres.init()` registers a process-wide SIGTERM/SIGINT handler that closes all connection pools and stops embedded Postgres instances.

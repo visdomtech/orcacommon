@@ -19,9 +19,9 @@ All middleware is `func(http.Handler) http.Handler` — compatible with gorilla/
 | `token.go` | Issuer (Issue/Verify), Claims, HashContext helper |
 | `guest.go` | GuestSession middleware, GuestSessionID helper |
 | `botverifier.go` | BotVerifier interface |
-| `turnstile.go` | TurnstileVerifier (Cloudflare Turnstile HTTP impl) |
-| `issuance.go` | IssuanceHandler (POST endpoint) |
-| `middleware.go` | Protect middleware (stateless verification) |
+| `turnstile.go` | TurnstileVerifier (Cloudflare Turnstile HTTP impl), dummy test key constants, `VerifyWithDetails` |
+| `issuance.go` | IssuanceHandler (POST endpoint, 1KB body limit) |
+| `middleware.go` | Protect middleware (stateless verification, scope enforcement) |
 | `helpers.go` | base64url encode/decode |
 
 ## Configuration
@@ -33,7 +33,8 @@ cfg := ephemeralauth.Config{
     TurnstileSecret:   os.Getenv("EPHEMERAL_TURNSTILE_SECRET"),   // optional
     TurnstileSitekey:  os.Getenv("EPHEMERAL_TURNSTILE_SITEKEY"),  // frontend widget key (public)
     TrustProxy:        false,                                  // read X-Forwarded-For
-    Scopes:            []string{"public:read"},
+    Scopes:            []string{"public:read"},                // scopes issued to new tokens
+    RequiredScopes:    []string{"public:read"},                // scopes required by Protect middleware
 }
 ```
 
@@ -96,7 +97,7 @@ Content-Type: application/json
 
 **Error Responses:**
 - `401` — No valid guest session cookie → solve/re-solve the Turnstile challenge first, then retry
-- `400` — Missing or malformed `bot_token`
+- `400` — Missing or malformed `bot_token`, or request body exceeds 1KB limit
 - `403` — Bot verification failed (low score or error)
 - `405` — Method not allowed (only POST)
 
@@ -134,7 +135,9 @@ Do NOT retry more than once without user interaction.
 - Verification is fully stateless — no server-side session store or token revocation
 - Context binding (IP hash + UA hash) prevents token sharing across devices/IPs
 - Bot verification is fail-closed: verifier error → reject issuance
-- Signing key is redacted in slog output via `slog.LogValuer`
+- Signing key and Turnstile secret are redacted in slog output via `slog.LogValuer`
+- Issuance handler enforces a 1KB body size limit via `http.MaxBytesReader`
+- `RequiredScopes` in Config enables scope enforcement through the protection middleware
 
 ## Testing
 

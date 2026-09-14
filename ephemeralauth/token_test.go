@@ -170,3 +170,59 @@ func TestToken_DefaultTTL(t *testing.T) {
 		t.Errorf("expires_in = %d, want 120 (default)", expiresIn)
 	}
 }
+
+func TestConfig_TTL_Clamp(t *testing.T) {
+	tests := []struct {
+		seconds int
+		want    time.Duration
+	}{
+		{0, 120 * time.Second},   // zero → default
+		{10, 60 * time.Second},   // below min → 60s
+		{120, 120 * time.Second}, // valid
+		{300, 180 * time.Second}, // above max → 180s
+	}
+	for _, tt := range tests {
+		cfg := Config{TokenTTLSeconds: tt.seconds}
+		if got := cfg.TTL(); got != tt.want {
+			t.Errorf("Config{TokenTTLSeconds: %d}.TTL() = %v, want %v", tt.seconds, got, tt.want)
+		}
+	}
+}
+
+func TestConfig_DefaultScopes(t *testing.T) {
+	cfg := Config{}
+	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "public:read" {
+		t.Errorf("DefaultScopes() = %v, want [public:read]", got)
+	}
+	cfg.Scopes = []string{"custom:read"}
+	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "custom:read" {
+		t.Errorf("DefaultScopes() = %v, want [custom:read]", got)
+	}
+}
+
+func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
+	cfg := Config{
+		SigningKey:      "super-secret-key-12345678901234",
+		TurnstileSecret: "turnstile-secret-value",
+	}
+	val := cfg.LogValue()
+	str := val.String()
+	if strings.Contains(str, "super-secret-key") {
+		t.Error("signing key leaked in LogValue output")
+	}
+	if strings.Contains(str, "turnstile-secret-value") {
+		t.Error("turnstile secret leaked in LogValue output")
+	}
+	if !strings.Contains(str, "[REDACTED]") {
+		t.Error("expected [REDACTED] in LogValue output")
+	}
+}
+
+func TestConfig_LogValue_EmptyKeysNotRedacted(t *testing.T) {
+	cfg := Config{}
+	val := cfg.LogValue()
+	str := val.String()
+	if strings.Contains(str, "[REDACTED]") {
+		t.Error("empty keys should not produce [REDACTED]")
+	}
+}

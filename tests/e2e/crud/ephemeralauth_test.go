@@ -175,7 +175,7 @@ func TestIssuance_MissingBotToken_400(t *testing.T) {
 	harness.AssertStatus(t, resp2, http.StatusBadRequest)
 }
 
-func TestIssuance_OversizedBody_400(t *testing.T) {
+func TestIssuance_OversizedBody_413(t *testing.T) {
 	// Visit page to set guest cookie.
 	resp := stack.Do(t, "GET", "/", nil, nil)
 	resp.Body.Close()

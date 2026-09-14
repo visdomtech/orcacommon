@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -189,5 +190,53 @@ func TestIssuance_OversizedBody_400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for oversized body", rec.Code)
+	}
+}
+
+func TestIssuance_OversizedValidJSON_413(t *testing.T) {
+	cfg := newTestConfig()
+	handler := IssuanceHandler(cfg, &stubVerifier{pass: true}, cfg.Issuer())
+
+	// Create valid JSON that exceeds the 1KB limit.
+	// A large bot_token value that's valid JSON but > 1024 bytes.
+	bigToken := strings.Repeat("x", 1100)
+	body := `{"bot_token":"` + bigToken + `"}`
+	req := httptest.NewRequest("POST", "/api/auth/ephemeral-token",
+		strings.NewReader(body))
+	req.AddCookie(makeGuestCookie(t, []byte(cfg.SigningKey)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413 for oversized valid JSON body", rec.Code)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		trustProxy bool
+		xff        string
+		remoteAddr string
+		want       string
+	}{
+		{"trust_proxy_with_xff", true, "1.2.3.4", "10.0.0.1:1234", "1.2.3.4"},
+		{"trust_proxy_with_xff_chain", true, "1.2.3.4, 5.6.7.8", "10.0.0.1:1234", "1.2.3.4"},
+		{"trust_proxy_no_xff", true, "", "10.0.0.1:1234", "10.0.0.1"},
+		{"no_trust_proxy_with_xff", false, "1.2.3.4", "10.0.0.1:1234", "10.0.0.1"},
+		{"remote_addr_no_port", false, "", "10.0.0.1", "10.0.0.1"},
+		{"remote_addr_unparseable", false, "", "not-valid", "not-valid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.xff != "" {
+				req.Header.Set("X-Forwarded-For", tt.xff)
+			}
+			if got := clientIP(req, tt.trustProxy); got != tt.want {
+				t.Errorf("clientIP(trustProxy=%v) = %q, want %q", tt.trustProxy, got, tt.want)
+			}
+		})
 	}
 }

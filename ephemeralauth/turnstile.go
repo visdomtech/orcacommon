@@ -56,6 +56,11 @@ func NewTurnstileVerifier(secret string) *TurnstileVerifier {
 		endpoint: turnstileEndpoint,
 		httpClient: &http.Client{
 			Timeout: turnstileTimeout,
+			Transport: &http.Transport{
+				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     50,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -119,7 +124,7 @@ func (tv *TurnstileVerifier) VerifyWithDetails(ctx context.Context, token string
 	}
 
 	var raw turnstileResponse
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("ephemeralauth: decode turnstile response: %w", err)
 	}
 

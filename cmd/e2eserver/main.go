@@ -173,6 +173,7 @@ func main() {
 		slog.Error("write manifest", "error", err)
 		os.Exit(1)
 	}
+	defer os.Remove(manifestPath) // clean up on panic as well as normal exit
 	slog.Info("e2e server listening", "base_url", ts.URL, "manifest", manifestPath)
 
 	// Block until signal.

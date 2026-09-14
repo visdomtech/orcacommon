@@ -408,6 +408,7 @@ func TestServeRoot_PublicAuth_GuestCookieSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	gm := ephemeralauth.GuestSession([]byte("test-signing-key-for-litespa-test"))
 	s := &Server{
 		cdn:      "https://cdn.example",
 		embedded: sub,
@@ -416,12 +417,13 @@ func TestServeRoot_PublicAuth_GuestCookieSet(t *testing.T) {
 		static:   newStaticRetriever(nil, nil),
 		fetcher:  newFetcher(nil),
 		indexCache: make(map[string]string),
-		// Wire guest middleware.
-		guestMiddleware: ephemeralauth.GuestSession([]byte("test-signing-key-for-litespa-test")),
+		// Wire guest middleware and its cached wrapper.
+		guestMiddleware: gm,
 		publicAuthCfg: &ephemeralauth.Config{
 			SigningKey: "test-signing-key-for-litespa-test",
 		},
 	}
+	s.wrappedServeRoot = gm(http.HandlerFunc(s.serveRootInner))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Accept", "text/html")

@@ -82,6 +82,7 @@ func RunMain(m *testing.M, out **Stack) {
 		os.Exit(1)
 	}
 	*out = stack
-	defer stack.Close(ctx)
-	os.Exit(m.Run())
+	code := m.Run()
+	stack.Close(ctx)
+	os.Exit(code)
 }

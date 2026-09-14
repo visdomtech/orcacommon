@@ -43,10 +43,11 @@ type Server struct {
 	sf         singleflight.Group
 
 	// Ephemeral auth fields (nil when PublicAuth is not configured).
-	guestMiddleware func(http.Handler) http.Handler
-	issuer          *ephemeralauth.Issuer
-	issuanceHandler http.Handler
-	publicAuthCfg   *ephemeralauth.Config
+	guestMiddleware  func(http.Handler) http.Handler
+	issuer           *ephemeralauth.Issuer
+	issuanceHandler  http.Handler
+	publicAuthCfg    *ephemeralauth.Config
+	wrappedServeRoot http.Handler // cached guest-middleware-wrapped serveRootInner
 }
 
 // NewServer builds a Server from the provided Config. pool is used for the
@@ -79,7 +80,15 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 		}
 		if verifier != nil {
 			s.issuanceHandler = ephemeralauth.IssuanceHandler(*cfg.PublicAuth, verifier, s.issuer)
+		} else {
+			slog.Warn("litespaserver: PublicAuth is configured but TurnstileSecret is empty; " +
+				"PublicAuthHandler() will return nil")
 		}
+	}
+
+	// Cache the guest-middleware-wrapped handler to avoid per-request closure allocations.
+	if s.guestMiddleware != nil {
+		s.wrappedServeRoot = s.guestMiddleware(http.HandlerFunc(s.serveRootInner))
 	}
 
 	return s
@@ -131,10 +140,9 @@ func (s *Server) FlushCache() {
 // index.html with a fresh CSP nonce. When PublicAuth is configured, the guest
 // session middleware is applied to set/refresh the guest cookie.
 func (s *Server) ServeRoot(w http.ResponseWriter, r *http.Request) {
-	// Apply guest session middleware when ephemeral auth is configured.
-	if s.guestMiddleware != nil {
-		handler := s.guestMiddleware(http.HandlerFunc(s.serveRootInner))
-		handler.ServeHTTP(w, r)
+	// Apply cached guest session middleware when ephemeral auth is configured.
+	if s.wrappedServeRoot != nil {
+		s.wrappedServeRoot.ServeHTTP(w, r)
 		return
 	}
 	s.serveRootInner(w, r)

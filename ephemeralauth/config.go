@@ -42,17 +42,7 @@ type Config struct {
 
 // TTL returns the configured TTL as a time.Duration, clamped to [60s, 180s].
 func (c Config) TTL() time.Duration {
-	ttl := time.Duration(c.TokenTTLSeconds) * time.Second
-	if ttl <= 0 {
-		ttl = defaultTokenTTL
-	}
-	if ttl < 60*time.Second {
-		ttl = 60 * time.Second
-	}
-	if ttl > maxTokenTTL {
-		ttl = maxTokenTTL
-	}
-	return ttl
+	return clampTTL(time.Duration(c.TokenTTLSeconds) * time.Second)
 }
 
 // Issuer creates an Issuer from this config.

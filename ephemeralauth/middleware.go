@@ -2,6 +2,7 @@ package ephemeralauth
 
 import (
 	"crypto/hmac"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -43,7 +44,9 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 
 			// Check session binding: token's sub must match the current guest cookie.
 			sessionID, ok := GuestSessionID(r, signingKey)
-			if !ok || sessionID != claims.Subject {
+			if !ok || !hmac.Equal([]byte(sessionID), []byte(claims.Subject)) {
+				slog.Debug("ephemeralauth: session binding mismatch",
+					"cookie_valid", ok)
 				http.Error(w, "forbidden: session mismatch", http.StatusForbidden)
 				return
 			}
@@ -52,6 +55,8 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			remoteIP := clientIP(r, trustProxy)
 			ipHash := HashContext(signingKey, remoteIP)
 			if !hmac.Equal([]byte(ipHash), []byte(claims.IPHash)) {
+				slog.Debug("ephemeralauth: IP binding mismatch",
+					"remote_ip", remoteIP)
 				http.Error(w, "forbidden: IP mismatch", http.StatusForbidden)
 				return
 			}
@@ -59,12 +64,15 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			// Check User-Agent binding.
 			uaHash := HashContext(signingKey, r.UserAgent())
 			if !hmac.Equal([]byte(uaHash), []byte(claims.UAHash)) {
+				slog.Debug("ephemeralauth: User-Agent binding mismatch")
 				http.Error(w, "forbidden: User-Agent mismatch", http.StatusForbidden)
 				return
 			}
 
 			// Check scopes.
 			if len(requiredScopes) > 0 && !hasRequiredScopes(claims.Scopes, requiredScopes) {
+				slog.Debug("ephemeralauth: insufficient scope",
+					"required", requiredScopes, "token_scopes", claims.Scopes)
 				http.Error(w, "forbidden: insufficient scope", http.StatusForbidden)
 				return
 			}
@@ -75,13 +83,17 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 }
 
 // hasRequiredScopes checks that every required scope is present in the token's scopes.
+// Uses linear scan, which is efficient for the typical case of 1–4 scopes.
 func hasRequiredScopes(tokenScopes, required []string) bool {
-	set := make(map[string]struct{}, len(tokenScopes))
-	for _, s := range tokenScopes {
-		set[s] = struct{}{}
-	}
 	for _, r := range required {
-		if _, ok := set[r]; !ok {
+		found := false
+		for _, s := range tokenScopes {
+			if s == r {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}

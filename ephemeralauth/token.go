@@ -21,6 +21,25 @@ const maxTokenTTL = 180 * time.Second
 // defaultTokenTTL is used when Config.TokenTTLSeconds is zero.
 const defaultTokenTTL = 120 * time.Second
 
+// minSigningKeyLength is the minimum signing key length in bytes.
+// RFC 7518 §3.2 recommends key length >= hash output size for HMAC.
+const minSigningKeyLength = 32
+
+// clampTTL clamps a duration to the valid token lifetime range [60s, 180s].
+// Zero or negative values are replaced with the default TTL.
+func clampTTL(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return defaultTokenTTL
+	}
+	if ttl < 60*time.Second {
+		return 60 * time.Second
+	}
+	if ttl > maxTokenTTL {
+		return maxTokenTTL
+	}
+	return ttl
+}
+
 // Claims extends jwt.RegisteredClaims with context-binding fields.
 type Claims struct {
 	jwt.RegisteredClaims
@@ -36,18 +55,13 @@ type Issuer struct {
 }
 
 // NewIssuer creates an Issuer from the signing key and TTL.
+// The signing key must be at least 32 bytes (RFC 7518 §3.2).
 // ttl is clamped to [60s, 180s].
 func NewIssuer(signingKey []byte, ttl time.Duration) *Issuer {
-	if ttl <= 0 {
-		ttl = defaultTokenTTL
+	if len(signingKey) < minSigningKeyLength {
+		panic("ephemeralauth: signing key must be at least 32 bytes")
 	}
-	if ttl < 60*time.Second {
-		ttl = 60 * time.Second
-	}
-	if ttl > maxTokenTTL {
-		ttl = maxTokenTTL
-	}
-	return &Issuer{signingKey: signingKey, ttl: ttl}
+	return &Issuer{signingKey: signingKey, ttl: clampTTL(ttl)}
 }
 
 // Issue creates a signed JWT with the provided context bindings.

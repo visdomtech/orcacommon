@@ -48,7 +48,7 @@ tasks:
         if [ -f /tmp/orcacommon-e2e-server.json ]; then
           # Kill by PID from manifest (avoids pkill -f false positives)
           PID=$(grep -o '"pid":"[^"]*"' /tmp/orcacommon-e2e-server.json | sed 's/"pid":"//;s/"//' 2>/dev/null || true)
-          if [ -n "$PID" ]; then
+          if [ -n "$PID" ] && ps -p "$PID" -o args= 2>/dev/null | grep -q 'orcacommon-e2e-server'; then
             kill "$PID" 2>/dev/null || true
           fi
           rm -f /tmp/orcacommon-e2e-server /tmp/orcacommon-e2e-server.json

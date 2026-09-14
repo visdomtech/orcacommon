@@ -208,3 +208,17 @@ func TestGuest_GuestSessionID_TamperedCookie(t *testing.T) {
 		t.Error("GuestSessionID() = true for tampered cookie, want false")
 	}
 }
+
+func TestGuest_VerifyCookie_InvalidBase64(t *testing.T) {
+	_, ok := verifyGuestCookie("!!!invalid.!!!invalid", testKey)
+	if ok {
+		t.Error("verifyGuestCookie should reject invalid base64")
+	}
+}
+
+func TestGuest_VerifyCookie_NoDot(t *testing.T) {
+	_, ok := verifyGuestCookie("nodothere", testKey)
+	if ok {
+		t.Error("verifyGuestCookie should reject cookie without dot separator")
+	}
+}

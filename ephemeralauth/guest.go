@@ -4,6 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -31,6 +33,7 @@ func GuestSession(signingKey []byte) func(http.Handler) http.Handler {
 			// No valid cookie — generate a new guest session.
 			id, err := generateGuestID()
 			if err != nil {
+				slog.Error("ephemeralauth: generate guest ID", "error", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -99,6 +102,6 @@ func verifyGuestCookie(value string, key []byte) (string, bool) {
 // generateGuestID produces a crypto-random ID of guestIDLength bytes.
 func generateGuestID() ([]byte, error) {
 	b := make([]byte, guestIDLength)
-	_, err := rand.Read(b)
+	_, err := io.ReadFull(rand.Reader, b)
 	return b, err
 }

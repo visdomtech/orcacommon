@@ -21,6 +21,11 @@ type Config struct {
 	// BotVerifier. Env: EPHEMERAL_TURNSTILE_SECRET.
 	TurnstileSecret string `env:"EPHEMERAL_TURNSTILE_SECRET"`
 
+	// TurnstileSitekey is the Cloudflare Turnstile sitekey for the
+	// frontend widget. This is a public key (not secret) that the
+	// frontend uses to render the challenge. Env: EPHEMERAL_TURNSTILE_SITEKEY.
+	TurnstileSitekey string `env:"EPHEMERAL_TURNSTILE_SITEKEY"`
+
 	// TrustProxy enables reading X-Forwarded-For for client IP extraction.
 	// Default: false (use r.RemoteAddr). Env: EPHEMERAL_TRUST_PROXY.
 	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY"`
@@ -73,6 +78,7 @@ func (c Config) LogValue() slog.Value {
 		slog.String("signing_key", signing),
 		slog.Int("token_ttl_seconds", c.TokenTTLSeconds),
 		slog.String("turnstile_secret", turnstile),
+		slog.String("turnstile_sitekey", c.TurnstileSitekey), // public key, not redacted
 		slog.Bool("trust_proxy", c.TrustProxy),
 		slog.Any("scopes", c.Scopes),
 	)

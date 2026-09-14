@@ -1,10 +1,10 @@
 # PROGRESS — Ephemeral Token Auth
 
-**Autonomy rule:** When running with skill `as-goal`, always proceed autonomously to the next iteration/task without stopping to ask. **Exception for this run (user instruction):** stop after Phase 4 Step 1 (Architect's plan) so the user can review all generated documents before implementation begins.
+**Autonomy rule:** When running with skill `as-goal`, always proceed autonomously to the next iteration/task without stopping to ask.
 
 - **Goal file:** docs/as-goals/ephemeral-token-auth.md
-- **Current phase:** 4
-- **Iteration:** 1/10 (gates frozen — clock started)
+- **Current phase:** 4 (DONE)
+- **Iteration:** 1/10 (all gates passed)
 
 ## Team
 
@@ -16,27 +16,27 @@ Bench idle: Frontend (no JS in repo — contract doc only), Performance (no perf
 
 | Gate | Status | Last Evaluated |
 |------|--------|----------------|
-| 1. Token Sign & Verify Unit | Pending | - |
-| 2. Guest Session Middleware | Pending | - |
-| 3. Token Issuance Endpoint | Pending | - |
-| 4. Protection Middleware | Pending | - |
-| 5. End-to-End Integration | Pending | - |
-| 6. LiteSPA Server Integration | Pending | - |
-| 7. Frontend Contract & Docs | Pending | - |
+| 1. Token Sign & Verify Unit | ✅ Pass | Iteration 1 |
+| 2. Guest Session Middleware | ✅ Pass | Iteration 1 |
+| 3. Token Issuance Endpoint | ✅ Pass | Iteration 1 |
+| 4. Protection Middleware | ✅ Pass | Iteration 1 |
+| 5. End-to-End Integration | ✅ Pass | Iteration 1 |
+| 6. LiteSPA Server Integration | ✅ Pass | Iteration 1 |
+| 7. Frontend Contract & Docs | ✅ Pass | Iteration 1 |
 
 ## Iteration Log
 
 | Iteration | Decision | Gates | Commits | Artifacts |
 |-----------|----------|-------|---------|-----------|
-| - | - | - | - | - |
+| 1 | DONE | 7/7 | `1427736`, `70424f6`, `063775f`, `9a6646b`, `5c34e1f`, `c9ca05e`, `bee3561`, `b7e8501`, `738c63d` | [plan](1/plan.md) / [review](1/review.md) / [manifest](1/evidence-manifest.md) |
 
 ## Open Defects
 
-None yet.
+None.
 
 ## Next Actions
 - [x] Phase 1: goal confirmed and saved → `docs/as-goals/ephemeral-token-auth.md`
 - [x] Phase 2: team assembled (4 core + Security + Documentation) → `agents/`
 - [x] Phase 3: 7 exit gates defined and frozen → `gates/`
-- [x] Phase 4 Step 1: Architect produced `1/plan.md` (8 tasks, 7 architecture decisions, 2 new deps justified)
-- [ ] **STOPPED for user review of all generated documents** (user instruction) — resume at Phase 4 Step 2 (Engineer implements `1/plan.md`) on user approval
+- [x] Phase 4 Iteration 1: all 8 tasks implemented, all 7 gates pass, DONE declared
+- [x] Final report: `DONE.md`

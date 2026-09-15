@@ -43,7 +43,7 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			}
 
 			// Check session binding: token's sub must match the current guest cookie.
-			sessionID, ok := GuestSessionID(r, signingKey) // GuestSessionID derives internally
+			sessionID, ok := GuestSessionID(r, signingKey)
 			if !ok || !hmac.Equal([]byte(sessionID), []byte(claims.Subject)) {
 				slog.Debug("ephemeralauth: session binding mismatch",
 					"cookie_valid", ok)
@@ -53,7 +53,7 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 
 			// Check IP binding.
 			remoteIP := clientIP(r, trustProxy)
-			ipHash := HashContext(signingKey, remoteIP) // HashContext derives internally
+			ipHash := HashContext(signingKey, remoteIP)
 			if !hmac.Equal([]byte(ipHash), []byte(claims.IPHash)) {
 				slog.Debug("ephemeralauth: IP binding mismatch",
 					"remote_ip", remoteIP)
@@ -62,7 +62,7 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			}
 
 			// Check User-Agent binding.
-			uaHash := HashContext(signingKey, r.UserAgent()) // HashContext derives internally
+			uaHash := HashContext(signingKey, r.UserAgent())
 			if !hmac.Equal([]byte(uaHash), []byte(claims.UAHash)) {
 				slog.Debug("ephemeralauth: User-Agent binding mismatch")
 				http.Error(w, "forbidden: User-Agent mismatch", http.StatusForbidden)

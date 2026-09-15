@@ -168,7 +168,7 @@ func TestGuest_GuestSessionID_ValidCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateGuestID error: %v", err)
 	}
-	value := signGuestCookie(id, testKey)
+	value := signGuestCookie(id, DeriveKey(testKey))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: guestCookieName, Value: value})
@@ -188,7 +188,7 @@ func TestGuest_GuestSessionID_TamperedCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateGuestID error: %v", err)
 	}
-	value := signGuestCookie(id, testKey)
+	value := signGuestCookie(id, DeriveKey(testKey))
 
 	// Tamper: modify the ID portion.
 	parts := strings.SplitN(value, ".", 2)
@@ -210,15 +210,56 @@ func TestGuest_GuestSessionID_TamperedCookie(t *testing.T) {
 }
 
 func TestGuest_VerifyCookie_InvalidBase64(t *testing.T) {
-	_, ok := verifyGuestCookie("!!!invalid.!!!invalid", testKey)
+	_, ok := verifyGuestCookie("!!!invalid.!!!invalid", DeriveKey(testKey))
 	if ok {
 		t.Error("verifyGuestCookie should reject invalid base64")
 	}
 }
 
 func TestGuest_VerifyCookie_NoDot(t *testing.T) {
-	_, ok := verifyGuestCookie("nodothere", testKey)
+	_, ok := verifyGuestCookie("nodothere", DeriveKey(testKey))
 	if ok {
 		t.Error("verifyGuestCookie should reject cookie without dot separator")
+	}
+}
+
+func TestGuest_ShortKey_RoundTrip(t *testing.T) {
+	// A short signing key should work end-to-end through GuestSession and GuestSessionID.
+	shortKey := []byte("k")
+	mw := GuestSession(shortKey)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	// Extract the cookie set by the middleware.
+	cookies := rec.Result().Cookies()
+	var guestCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == guestCookieName {
+			guestCookie = c
+			break
+		}
+	}
+	if guestCookie == nil {
+		t.Fatal("guest_session cookie not set")
+	}
+
+	// Verify the cookie can be read back by GuestSessionID using the same short key.
+	req2 := httptest.NewRequest("GET", "/", nil)
+	req2.AddCookie(guestCookie)
+	sessionID, ok := GuestSessionID(req2, shortKey)
+	if !ok {
+		t.Fatal("GuestSessionID() = false for valid cookie signed with short key")
+	}
+	if sessionID == "" {
+		t.Error("GuestSessionID() returned empty session ID")
 	}
 }

@@ -66,7 +66,7 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 	}
 
 	// Wire ephemeral auth when configured.
-	if cfg.PublicAuth != nil {
+	if cfg.PublicAuth != nil && cfg.PublicAuth.SigningKey != "" {
 		s.publicAuthCfg = cfg.PublicAuth
 		signingKey := []byte(cfg.PublicAuth.SigningKey)
 		s.guestMiddleware = ephemeralauth.GuestSession(signingKey)
@@ -300,6 +300,5 @@ func (s *Server) PublicAuthMiddleware() func(http.Handler) http.Handler {
 	if s.publicAuthCfg == nil || s.issuer == nil {
 		return nil
 	}
-	signingKey := []byte(s.publicAuthCfg.SigningKey)
-	return ephemeralauth.Protect(s.issuer, signingKey, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
+	return ephemeralauth.Protect(s.issuer, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
 }

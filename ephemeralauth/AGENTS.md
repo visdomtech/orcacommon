@@ -16,7 +16,7 @@ All middleware is `func(http.Handler) http.Handler` — compatible with gorilla/
 | File | Responsibility |
 |------|---------------|
 | `config.go` | Config struct (caarlos0/env tags), slog.LogValuer with secret redaction |
-| `token.go` | Issuer (Issue/Verify), Claims, HashContext helper |
+| `token.go` | Issuer (Issue/Verify), Claims, DeriveKey (SHA-256 key normalisation), HashContext helper |
 | `guest.go` | GuestSession middleware, GuestSessionID helper |
 | `botverifier.go` | BotVerifier interface |
 | `turnstile.go` | TurnstileVerifier (Cloudflare Turnstile HTTP impl), dummy test key constants, `VerifyWithDetails` |
@@ -54,7 +54,7 @@ router.Handle("/api/auth/ephemeral-token",
 
 // Protection on API routes.
 router.Handle("/api/public/data",
-    ephemeralauth.Protect(issuer, signingKey, cfg.TrustProxy, "public:read")(apiHandler))
+    ephemeralauth.Protect(issuer, cfg.TrustProxy, "public:read")(apiHandler))
 ```
 
 ## LiteSPA Server Integration
@@ -77,6 +77,7 @@ See [frontend-integration.md](frontend-integration.md) for the complete frontend
 
 ## Security Notes
 
+- Any non-empty signing key is accepted; it is normalised to 32 bytes via SHA-256 (`DeriveKey`). Keys already 32 bytes are preserved as-is for backward compatibility. Keys shorter than 32 bytes produce a logged warning about reduced entropy.
 - JWT is HS256 only; algorithm pinning rejects `alg=none` and RS256 confusion
 - Guest cookie: `SameSite=Strict; HttpOnly; Secure`
 - Verification is fully stateless — no server-side session store or token revocation

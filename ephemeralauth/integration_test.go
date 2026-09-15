@@ -39,7 +39,7 @@ func TestIntegration(t *testing.T) {
 
 	// Protected API route.
 	router.Handle("/api/public/data",
-		Protect(issuer, signingKey, false, "public:read")(
+		Protect(issuer, false, "public:read")(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Write([]byte(`{"data":"secret"}`))

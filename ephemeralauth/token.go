@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -21,9 +22,31 @@ const maxTokenTTL = 180 * time.Second
 // defaultTokenTTL is used when Config.TokenTTLSeconds is zero.
 const defaultTokenTTL = 120 * time.Second
 
-// minSigningKeyLength is the minimum signing key length in bytes.
-// RFC 7518 §3.2 recommends key length >= hash output size for HMAC.
-const minSigningKeyLength = 32
+// DeriveKey normalises an arbitrary-length signing key to exactly 32 bytes.
+// Keys that are already 32 bytes are returned as-is (backward compatible with
+// deployments that predate DeriveKey). Shorter or longer keys are hashed with
+// SHA-256.
+//
+// All public functions in this package call DeriveKey internally (some once at
+// setup, others per call), so consumers may supply any non-empty key.
+//
+// WARNING: The derived key must only be used with this package's JWT and
+// context-binding operations. Using it for other cryptographic purposes
+// breaks key isolation.
+//
+// Panics if raw is nil or empty.
+func DeriveKey(raw []byte) []byte {
+	if len(raw) == 0 {
+		panic("ephemeralauth: cannot derive key from empty input")
+	}
+	if len(raw) == 32 {
+		out := make([]byte, 32)
+		copy(out, raw)
+		return out
+	}
+	sum := sha256.Sum256(raw)
+	return sum[:]
+}
 
 // clampTTL clamps a duration to the valid token lifetime range [60s, 180s].
 // Zero or negative values are replaced with the default TTL.
@@ -55,13 +78,24 @@ type Issuer struct {
 }
 
 // NewIssuer creates an Issuer from the signing key and TTL.
-// The signing key must be at least 32 bytes (RFC 7518 §3.2).
+// Any non-empty key is accepted; it is normalised to 32 bytes via
+// DeriveKey (SHA-256). Keys shorter than 32 bytes produce a warning
+// because they may offer insufficient entropy.
 // ttl is clamped to [60s, 180s].
 func NewIssuer(signingKey []byte, ttl time.Duration) *Issuer {
-	if len(signingKey) < minSigningKeyLength {
-		panic("ephemeralauth: signing key must be at least 32 bytes")
+	if len(signingKey) == 0 {
+		panic("ephemeralauth: signing key must not be empty")
 	}
-	return &Issuer{signingKey: signingKey, ttl: clampTTL(ttl)}
+	if len(signingKey) < 32 {
+		slog.Warn("ephemeralauth: signing key is shorter than 32 bytes; "+
+			"this reduces entropy and may be vulnerable to offline brute-force",
+			"key_len", len(signingKey))
+	}
+	clamped := clampTTL(ttl)
+	slog.Debug("ephemeralauth: derived signing key",
+		"input_len", len(signingKey),
+		"ttl", clamped)
+	return &Issuer{signingKey: DeriveKey(signingKey), ttl: clamped}
 }
 
 // Issue creates a signed JWT with the provided context bindings.
@@ -111,10 +145,16 @@ func (iss *Issuer) Verify(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// HashContext computes HMAC-SHA256(key, value), truncated to 16 bytes, base64url-encoded.
-// Used for IP and User-Agent context binding.
+// HashContext computes HMAC-SHA256(DeriveKey(key), value), truncated to 16 bytes,
+// base64url-encoded. Used for IP and User-Agent context binding.
 func HashContext(key []byte, value string) string {
-	h := hmac.New(sha256.New, key)
+	return hashContextWithKey(DeriveKey(key), value)
+}
+
+// hashContextWithKey is the internal variant that accepts a pre-derived key,
+// avoiding redundant DeriveKey calls on the hot path.
+func hashContextWithKey(derivedKey []byte, value string) string {
+	h := hmac.New(sha256.New, derivedKey)
 	h.Write([]byte(value))
 	sum := h.Sum(nil)[:16]
 	return encodeBase64URL(sum)

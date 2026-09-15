@@ -1,6 +1,7 @@
 package ephemeralauth
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestToken_ExpiredRejected(t *testing.T) {
 		Scopes: []string{"public:read"},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(testKey)
+	signed, err := tok.SignedString(DeriveKey(testKey))
 	if err != nil {
 		t.Fatalf("SignedString() error: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestToken_RS256ConfusionRejected(t *testing.T) {
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := tok.SignedString(testKey)
+	signed, err := tok.SignedString(DeriveKey(testKey))
 	if err != nil {
 		t.Fatalf("SignedString() error: %v", err)
 	}
@@ -189,17 +190,6 @@ func TestConfig_TTL_Clamp(t *testing.T) {
 	}
 }
 
-func TestConfig_DefaultScopes(t *testing.T) {
-	cfg := Config{}
-	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "public:read" {
-		t.Errorf("DefaultScopes() = %v, want [public:read]", got)
-	}
-	cfg.Scopes = []string{"custom:read"}
-	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "custom:read" {
-		t.Errorf("DefaultScopes() = %v, want [custom:read]", got)
-	}
-}
-
 func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
 	cfg := Config{
 		SigningKey:      "super-secret-key-12345678901234",
@@ -225,4 +215,90 @@ func TestConfig_LogValue_EmptyKeysNotRedacted(t *testing.T) {
 	if strings.Contains(str, "[REDACTED]") {
 		t.Error("empty keys should not produce [REDACTED]")
 	}
+}
+
+func TestDeriveKey_Produces32Bytes(t *testing.T) {
+	derived := DeriveKey([]byte("short"))
+	if len(derived) != 32 {
+		t.Errorf("DeriveKey() length = %d, want 32", len(derived))
+	}
+}
+
+func TestDeriveKey_Deterministic(t *testing.T) {
+	a := DeriveKey([]byte("my-key"))
+	b := DeriveKey([]byte("my-key"))
+	if string(a) != string(b) {
+		t.Error("DeriveKey() not deterministic")
+	}
+}
+
+func TestDeriveKey_DifferentInputsDifferentOutput(t *testing.T) {
+	a := DeriveKey([]byte("key-a"))
+	b := DeriveKey([]byte("key-b"))
+	if string(a) == string(b) {
+		t.Error("DeriveKey() produced same output for different inputs")
+	}
+}
+
+func TestDeriveKey_PanicsOnNilInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("DeriveKey(nil) should panic")
+		}
+	}()
+	DeriveKey(nil)
+}
+
+func TestDeriveKey_PanicsOnEmptyInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("DeriveKey([]byte{}) should panic")
+		}
+	}()
+	DeriveKey([]byte{})
+}
+
+func TestDeriveKey_LongInput(t *testing.T) {
+	long := bytes.Repeat([]byte("a"), 10_000)
+	derived := DeriveKey(long)
+	if len(derived) != 32 {
+		t.Errorf("DeriveKey(10KB) length = %d, want 32", len(derived))
+	}
+}
+
+func TestDeriveKey_32ByteKeyPreserved(t *testing.T) {
+	// A 32-byte key should be returned as-is for backward compatibility.
+	raw := []byte("exactly-32-bytes-long-key!!!!!!!")
+	if len(raw) != 32 {
+		t.Fatalf("test setup error: raw key length = %d, want 32", len(raw))
+	}
+	derived := DeriveKey(raw)
+	if string(derived) != string(raw) {
+		t.Error("DeriveKey() should preserve 32-byte keys for backward compatibility")
+	}
+}
+
+func TestNewIssuer_AcceptsShortKey(t *testing.T) {
+	// Any non-empty key should work — no panic.
+	iss := NewIssuer([]byte("short"), 120*time.Second)
+	if iss == nil {
+		t.Fatal("NewIssuer() returned nil for short key")
+	}
+	// Verify it can issue and verify tokens.
+	tok, _, err := iss.Issue("s", "ip", "ua", []string{"public:read"})
+	if err != nil {
+		t.Fatalf("Issue() error: %v", err)
+	}
+	if _, err := iss.Verify(tok); err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+}
+
+func TestNewIssuer_PanicsOnEmptyKey(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewIssuer() should panic on empty key")
+		}
+	}()
+	NewIssuer([]byte{}, 120*time.Second)
 }

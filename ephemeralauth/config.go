@@ -9,12 +9,14 @@ import (
 // Struct tags follow the caarlos0/env convention.
 type Config struct {
 	// SigningKey is the HMAC-SHA256 key used for JWT signing and guest
-	// cookie HMAC. Required. Env: EPHEMERAL_SIGNING_KEY.
+	// cookie HMAC. Required. Any non-empty value is accepted; it is
+	// normalised to 32 bytes via SHA-256 (DeriveKey).
+	// Env: EPHEMERAL_SIGNING_KEY.
 	SigningKey string `env:"EPHEMERAL_SIGNING_KEY"`
 
 	// TokenTTLSeconds is the token lifetime in seconds. Clamped to [60, 180].
 	// Default: 120. Env: EPHEMERAL_TOKEN_TTL_SECONDS.
-	TokenTTLSeconds int `env:"EPHEMERAL_TOKEN_TTL_SECONDS"`
+	TokenTTLSeconds int `env:"EPHEMERAL_TOKEN_TTL_SECONDS" envDefault:"120"`
 
 	// TurnstileSecret is the Cloudflare Turnstile secret for the default
 	// BotVerifier implementation. If empty, the consumer must supply a
@@ -28,11 +30,11 @@ type Config struct {
 
 	// TrustProxy enables reading X-Forwarded-For for client IP extraction.
 	// Default: false (use r.RemoteAddr). Env: EPHEMERAL_TRUST_PROXY.
-	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY"`
+	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY" envDefault:"false"`
 
 	// Scopes is the default scope list issued to new tokens.
 	// Default: ["public:read"]. Env: EPHEMERAL_SCOPES.
-	Scopes []string `env:"EPHEMERAL_SCOPES"`
+	Scopes []string `env:"EPHEMERAL_SCOPES" envDefault:"public:read"`
 
 	// RequiredScopes is the list of scopes that must be present in a token
 	// for the protection middleware to allow the request through. When empty,
@@ -48,14 +50,6 @@ func (c Config) TTL() time.Duration {
 // Issuer creates an Issuer from this config.
 func (c Config) Issuer() *Issuer {
 	return NewIssuer([]byte(c.SigningKey), c.TTL())
-}
-
-// DefaultScopes returns the configured scopes or the default ["public:read"].
-func (c Config) DefaultScopes() []string {
-	if len(c.Scopes) == 0 {
-		return []string{"public:read"}
-	}
-	return c.Scopes
 }
 
 // LogValue implements slog.LogValuer, redacting the signing key and

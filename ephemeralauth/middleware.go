@@ -16,7 +16,12 @@ import (
 // Binding mismatch (session/IP/UA) → 403
 // Insufficient scope → 403
 // Valid + bound + scoped → request passes through
-func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes ...string) func(http.Handler) http.Handler {
+func Protect(issuer *Issuer, trustProxy bool, requiredScopes ...string) func(http.Handler) http.Handler {
+	if issuer == nil {
+		panic("ephemeralauth: Protect requires a non-nil Issuer")
+	}
+	// Reuse the Issuer's pre-derived key for context-binding HMAC.
+	derivedKey := issuer.signingKey
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract Bearer token.
@@ -38,22 +43,25 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			// Verify signature + expiry (stateless).
 			claims, err := issuer.Verify(tokenString)
 			if err != nil {
+				slog.Debug("ephemeralauth: token verification failed", "error", err)
 				http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 				return
 			}
 
 			// Check session binding: token's sub must match the current guest cookie.
-			sessionID, ok := GuestSessionID(r, signingKey)
+			sessionID, ok := guestSessionIDWithKey(r, derivedKey)
 			if !ok || !hmac.Equal([]byte(sessionID), []byte(claims.Subject)) {
 				slog.Debug("ephemeralauth: session binding mismatch",
-					"cookie_valid", ok)
+					"cookie_valid", ok,
+					"token_sub", claims.Subject,
+					"cookie_session", sessionID)
 				http.Error(w, "forbidden: session mismatch", http.StatusForbidden)
 				return
 			}
 
 			// Check IP binding.
 			remoteIP := clientIP(r, trustProxy)
-			ipHash := HashContext(signingKey, remoteIP)
+			ipHash := hashContextWithKey(derivedKey, remoteIP)
 			if !hmac.Equal([]byte(ipHash), []byte(claims.IPHash)) {
 				slog.Debug("ephemeralauth: IP binding mismatch",
 					"remote_ip", remoteIP)
@@ -62,7 +70,7 @@ func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes 
 			}
 
 			// Check User-Agent binding.
-			uaHash := HashContext(signingKey, r.UserAgent())
+			uaHash := hashContextWithKey(derivedKey, r.UserAgent())
 			if !hmac.Equal([]byte(uaHash), []byte(claims.UAHash)) {
 				slog.Debug("ephemeralauth: User-Agent binding mismatch")
 				http.Error(w, "forbidden: User-Agent mismatch", http.StatusForbidden)

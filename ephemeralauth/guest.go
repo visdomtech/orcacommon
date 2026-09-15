@@ -19,12 +19,14 @@ const guestIDLength = 16
 // GuestSession returns middleware that ensures every request carries a valid
 // HMAC-signed guest session cookie. If no valid cookie is present, a new one
 // is generated and set via Set-Cookie.
+// The signing key is normalised to 32 bytes via DeriveKey internally.
 func GuestSession(signingKey []byte) func(http.Handler) http.Handler {
+	key := DeriveKey(signingKey)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Try to read and verify the existing cookie.
 			if cookie, err := r.Cookie(guestCookieName); err == nil {
-				if _, ok := verifyGuestCookie(cookie.Value, signingKey); ok {
+				if _, ok := verifyGuestCookie(cookie.Value, key); ok {
 					next.ServeHTTP(w, r)
 					return
 				}
@@ -37,7 +39,7 @@ func GuestSession(signingKey []byte) func(http.Handler) http.Handler {
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
-			value := signGuestCookie(id, signingKey)
+			value := signGuestCookie(id, key)
 
 			http.SetCookie(w, &http.Cookie{
 				Name:     guestCookieName,
@@ -55,13 +57,19 @@ func GuestSession(signingKey []byte) func(http.Handler) http.Handler {
 
 // GuestSessionID extracts and verifies the guest session cookie from the
 // request. Returns the session ID and true if valid, empty string and false
-// otherwise.
+// otherwise. The signing key is normalised to 32 bytes via DeriveKey internally.
 func GuestSessionID(r *http.Request, signingKey []byte) (string, bool) {
+	return guestSessionIDWithKey(r, DeriveKey(signingKey))
+}
+
+// guestSessionIDWithKey is the internal variant that accepts a pre-derived key,
+// avoiding redundant DeriveKey calls on the hot path.
+func guestSessionIDWithKey(r *http.Request, derivedKey []byte) (string, bool) {
 	cookie, err := r.Cookie(guestCookieName)
 	if err != nil {
 		return "", false
 	}
-	return verifyGuestCookie(cookie.Value, signingKey)
+	return verifyGuestCookie(cookie.Value, derivedKey)
 }
 
 // signGuestCookie produces the cookie value: <base64url(id)>.<base64url(hmac)>.

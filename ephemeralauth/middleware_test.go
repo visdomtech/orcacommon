@@ -30,7 +30,7 @@ func makeSessionCookie(t *testing.T, key []byte) (*http.Cookie, string) {
 		t.Fatalf("generateGuestID: %v", err)
 	}
 	sessionID := encodeBase64URL(id)
-	value := signGuestCookie(id, key)
+	value := signGuestCookie(id, DeriveKey(key))
 	return &http.Cookie{
 		Name:  guestCookieName,
 		Value: value,
@@ -39,7 +39,7 @@ func makeSessionCookie(t *testing.T, key []byte) (*http.Cookie, string) {
 
 func TestProtect_NoHeader_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -55,7 +55,7 @@ func TestProtect_NoHeader_401(t *testing.T) {
 
 func TestProtect_MalformedHeader_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -72,7 +72,7 @@ func TestProtect_MalformedHeader_401(t *testing.T) {
 
 func TestProtect_ExpiredToken_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -90,7 +90,7 @@ func TestProtect_ExpiredToken_401(t *testing.T) {
 		Scopes: []string{"public:read"},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, _ := tok.SignedString(testKey)
+	signed, _ := tok.SignedString(DeriveKey(testKey))
 
 	req := httptest.NewRequest("GET", "/api/data", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)
@@ -104,7 +104,7 @@ func TestProtect_ExpiredToken_401(t *testing.T) {
 
 func TestProtect_BadSignature_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -129,7 +129,7 @@ func TestProtect_BadSignature_401(t *testing.T) {
 
 func TestProtect_SessionMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -156,7 +156,7 @@ func TestProtect_SessionMismatch_403(t *testing.T) {
 
 func TestProtect_IPMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -181,7 +181,7 @@ func TestProtect_IPMismatch_403(t *testing.T) {
 
 func TestProtect_UAMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -204,7 +204,7 @@ func TestProtect_UAMismatch_403(t *testing.T) {
 
 func TestProtect_MissingScope_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false, "form:submit") // requires form:submit
+	mw := Protect(iss, false, "form:submit") // requires form:submit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -227,7 +227,7 @@ func TestProtect_MissingScope_403(t *testing.T) {
 
 func TestProtect_HappyPath(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false, "public:read")
+	mw := Protect(iss, false, "public:read")
 	var handlerCalled bool
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
@@ -251,6 +251,45 @@ func TestProtect_HappyPath(t *testing.T) {
 	if !handlerCalled {
 		t.Error("handler not called")
 	}
+}
+
+func TestProtect_ShortKey_HappyPath(t *testing.T) {
+	// Protect works end-to-end with a short (non-32-byte) signing key.
+	shortKey := []byte("short")
+	iss := NewIssuer(shortKey, 120*time.Second)
+	mw := Protect(iss, false, "public:read")
+	var handlerCalled bool
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cookie, sessionID := makeSessionCookie(t, shortKey)
+	token := issueTestToken(t, shortKey, sessionID, "1.2.3.4", "TestAgent", []string{"public:read"}, 120*time.Second)
+
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(cookie)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("User-Agent", "TestAgent")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !handlerCalled {
+		t.Error("handler not called")
+	}
+}
+
+func TestProtect_NilIssuer_Panics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Protect(nil, ...) should panic")
+		}
+	}()
+	Protect(nil, false)
 }
 
 // splitToken splits a JWT into its three parts.

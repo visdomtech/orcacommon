@@ -25,7 +25,7 @@ import (
 
 const (
 	manifestPath = "/tmp/orcacommon-e2e-server.json"
-	signingKey   = "e2e-test-signing-key-must-be-long-enough"
+	signingKey   = "e2e-test-signing-key"
 )
 
 func main() {
@@ -120,7 +120,7 @@ func main() {
 
 	// Protected endpoint requiring "public:read" scope.
 	r.Handle("/api/public/data",
-		ephemeralauth.Protect(issuer, []byte(signingKey), true, "public:read")(
+		ephemeralauth.Protect(issuer, true, "public:read")(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"data":"public"}`)
@@ -130,7 +130,7 @@ func main() {
 
 	// Protected endpoint requiring "admin:write" scope.
 	r.Handle("/api/admin/data",
-		ephemeralauth.Protect(issuer, []byte(signingKey), true, "admin:write")(
+		ephemeralauth.Protect(issuer, true, "admin:write")(
 			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(w, `{"data":"admin"}`)

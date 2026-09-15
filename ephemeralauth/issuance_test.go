@@ -37,7 +37,7 @@ func makeGuestCookie(t *testing.T, signingKey []byte) *http.Cookie {
 	}
 	return &http.Cookie{
 		Name:  guestCookieName,
-		Value: signGuestCookie(id, signingKey),
+		Value: signGuestCookie(id, DeriveKey(signingKey)),
 	}
 }
 
@@ -209,6 +209,73 @@ func TestIssuance_OversizedValidJSON_413(t *testing.T) {
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413 for oversized valid JSON body", rec.Code)
+	}
+}
+
+func TestIssuanceHandler_Protect_RoundTrip(t *testing.T) {
+	// End-to-end: issue a token via IssuanceHandler, then verify it passes Protect.
+	// Uses a short (non-32-byte) key to exercise DeriveKey through both paths.
+	shortKey := "short-key"
+	cfg := Config{
+		SigningKey:      shortKey,
+		TokenTTLSeconds: 120,
+		Scopes:          []string{"public:read"},
+	}
+	issuer := cfg.Issuer()
+	handler := IssuanceHandler(cfg, &stubVerifier{pass: true}, issuer)
+
+	// Step 1: Obtain a guest cookie.
+	guestMW := GuestSession([]byte(shortKey))
+	guestRec := httptest.NewRecorder()
+	guestReq := httptest.NewRequest("GET", "/", nil)
+	guestMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(guestRec, guestReq)
+
+	var guestCookie *http.Cookie
+	for _, c := range guestRec.Result().Cookies() {
+		if c.Name == guestCookieName {
+			guestCookie = c
+			break
+		}
+	}
+	if guestCookie == nil {
+		t.Fatal("no guest cookie from GuestSession")
+	}
+
+	// Step 2: Issue a token via IssuanceHandler.
+	req := httptest.NewRequest("POST", "/api/auth/ephemeral-token",
+		bytes.NewBufferString(`{"bot_token":"test"}`))
+	req.AddCookie(guestCookie)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("User-Agent", "TestAgent/1.0")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("IssuanceHandler status = %d, want 200", rec.Code)
+	}
+
+	var resp issuanceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Step 3: Feed the token to Protect.
+	protectMW := Protect(issuer, false, "public:read")
+	protectHandler := protectMW(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	protectReq := httptest.NewRequest("GET", "/api/data", nil)
+	protectReq.Header.Set("Authorization", "Bearer "+resp.Token)
+	protectReq.AddCookie(guestCookie)
+	protectReq.RemoteAddr = "1.2.3.4:1234"
+	protectReq.Header.Set("User-Agent", "TestAgent/1.0")
+	protectRec := httptest.NewRecorder()
+	protectHandler.ServeHTTP(protectRec, protectReq)
+
+	if protectRec.Code != http.StatusOK {
+		t.Errorf("Protect status = %d, want 200 (body: %s)", protectRec.Code, protectRec.Body.String())
 	}
 }
 

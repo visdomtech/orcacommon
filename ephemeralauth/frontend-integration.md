@@ -130,7 +130,8 @@ Content-Type: application/json
 
 | Status | Cause | Frontend action |
 |--------|-------|-----------------|
-| `400` | Missing/malformed `bot_token`, or body exceeds 1 KB | Check the request payload; ensure `bot_token` is a non-empty string from the Turnstile callback |
+| `400` | Missing/malformed `bot_token` or invalid JSON body | Check the request payload; ensure `bot_token` is a non-empty string from the Turnstile callback |
+| `413` | Request body exceeds 1 KB limit | Ensure no extra fields are sent beyond `bot_token` |
 | `401` | No valid guest session cookie | Load/reload a page served through `GuestSession` middleware to bootstrap the cookie, then retry |
 | `403` | Bot verification failed (Cloudflare rejected the token) | The Turnstile token may be expired or duplicate — re-render the widget and solve again |
 | `405` | Wrong HTTP method | Ensure the request uses `POST` |
@@ -145,7 +146,7 @@ Authorization: Bearer <token>
 
 ### What the Server Validates
 
-The `Protect` middleware performs five checks on every request, in order:
+The `Protect` middleware performs six checks on every request, in order:
 
 1. **Bearer token present** — missing or malformed `Authorization` header → `401`
 2. **Signature + expiry** — HS256 signature verification and `exp` claim check (stateless, no server-side store) → `401`

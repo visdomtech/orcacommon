@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/visdomtech/orcacommon/compare/v0.7.0...v0.7.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* tweak ephemeral auth signing key ([#21](https://github.com/visdomtech/orcacommon/issues/21)) ([e164654](https://github.com/visdomtech/orcacommon/commit/e164654cceaa7bb1e918da12e67851cd39dcce44))
+
 ## [0.7.0](https://github.com/visdomtech/orcacommon/compare/v0.6.0...v0.7.0) (2026-09-14)
 
 

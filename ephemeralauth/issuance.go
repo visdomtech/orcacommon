@@ -23,7 +23,7 @@ type issuanceResponse struct {
 // IssuanceHandler returns an http.Handler for the ephemeral token issuance
 // endpoint (POST /api/auth/ephemeral-token).
 func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Handler {
-	derivedKey := DeriveKey([]byte(cfg.SigningKey)) // derive once, not per request
+	derivedKey := issuer.signingKey // reuse the Issuer's pre-derived key (single source of truth)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

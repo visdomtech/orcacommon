@@ -17,6 +17,10 @@ import (
 // Insufficient scope → 403
 // Valid + bound + scoped → request passes through
 func Protect(issuer *Issuer, trustProxy bool, requiredScopes ...string) func(http.Handler) http.Handler {
+	if issuer == nil {
+		panic("ephemeralauth: Protect requires a non-nil Issuer")
+	}
+	// Reuse the Issuer's pre-derived key for context-binding HMAC.
 	derivedKey := issuer.signingKey
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +43,7 @@ func Protect(issuer *Issuer, trustProxy bool, requiredScopes ...string) func(htt
 			// Verify signature + expiry (stateless).
 			claims, err := issuer.Verify(tokenString)
 			if err != nil {
+				slog.Debug("ephemeralauth: token verification failed", "error", err)
 				http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 				return
 			}
@@ -47,7 +52,9 @@ func Protect(issuer *Issuer, trustProxy bool, requiredScopes ...string) func(htt
 			sessionID, ok := guestSessionIDWithKey(r, derivedKey)
 			if !ok || !hmac.Equal([]byte(sessionID), []byte(claims.Subject)) {
 				slog.Debug("ephemeralauth: session binding mismatch",
-					"cookie_valid", ok)
+					"cookie_valid", ok,
+					"token_sub", claims.Subject,
+					"cookie_session", sessionID)
 				http.Error(w, "forbidden: session mismatch", http.StatusForbidden)
 				return
 			}

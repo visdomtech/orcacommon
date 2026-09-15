@@ -253,6 +253,45 @@ func TestProtect_HappyPath(t *testing.T) {
 	}
 }
 
+func TestProtect_ShortKey_HappyPath(t *testing.T) {
+	// Protect works end-to-end with a short (non-32-byte) signing key.
+	shortKey := []byte("short")
+	iss := NewIssuer(shortKey, 120*time.Second)
+	mw := Protect(iss, false, "public:read")
+	var handlerCalled bool
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cookie, sessionID := makeSessionCookie(t, shortKey)
+	token := issueTestToken(t, shortKey, sessionID, "1.2.3.4", "TestAgent", []string{"public:read"}, 120*time.Second)
+
+	req := httptest.NewRequest("GET", "/api/data", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(cookie)
+	req.RemoteAddr = "1.2.3.4:1234"
+	req.Header.Set("User-Agent", "TestAgent")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !handlerCalled {
+		t.Error("handler not called")
+	}
+}
+
+func TestProtect_NilIssuer_Panics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Protect(nil, ...) should panic")
+		}
+	}()
+	Protect(nil, false)
+}
+
 // splitToken splits a JWT into its three parts.
 func splitToken(token string) [3]string {
 	var result [3]string

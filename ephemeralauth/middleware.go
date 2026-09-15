@@ -16,8 +16,8 @@ import (
 // Binding mismatch (session/IP/UA) → 403
 // Insufficient scope → 403
 // Valid + bound + scoped → request passes through
-func Protect(issuer *Issuer, signingKey []byte, trustProxy bool, requiredScopes ...string) func(http.Handler) http.Handler {
-	derivedKey := DeriveKey(signingKey)
+func Protect(issuer *Issuer, trustProxy bool, requiredScopes ...string) func(http.Handler) http.Handler {
+	derivedKey := issuer.signingKey
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract Bearer token.

@@ -77,7 +77,7 @@ func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Hand
 		uaHash := hashContextWithKey(derivedKey, r.UserAgent())
 
 		// Issue the token.
-		token, expiresIn, err := issuer.Issue(sessionID, ipHash, uaHash, cfg.DefaultScopes())
+		token, expiresIn, err := issuer.Issue(sessionID, ipHash, uaHash, cfg.Scopes)
 		if err != nil {
 			slog.Error("ephemeralauth: issue token", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)

@@ -190,17 +190,6 @@ func TestConfig_TTL_Clamp(t *testing.T) {
 	}
 }
 
-func TestConfig_DefaultScopes(t *testing.T) {
-	cfg := Config{}
-	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "public:read" {
-		t.Errorf("DefaultScopes() = %v, want [public:read]", got)
-	}
-	cfg.Scopes = []string{"custom:read"}
-	if got := cfg.DefaultScopes(); len(got) != 1 || got[0] != "custom:read" {
-		t.Errorf("DefaultScopes() = %v, want [custom:read]", got)
-	}
-}
-
 func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
 	cfg := Config{
 		SigningKey:      "super-secret-key-12345678901234",

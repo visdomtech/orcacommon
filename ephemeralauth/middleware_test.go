@@ -39,7 +39,7 @@ func makeSessionCookie(t *testing.T, key []byte) (*http.Cookie, string) {
 
 func TestProtect_NoHeader_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -55,7 +55,7 @@ func TestProtect_NoHeader_401(t *testing.T) {
 
 func TestProtect_MalformedHeader_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -72,7 +72,7 @@ func TestProtect_MalformedHeader_401(t *testing.T) {
 
 func TestProtect_ExpiredToken_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -104,7 +104,7 @@ func TestProtect_ExpiredToken_401(t *testing.T) {
 
 func TestProtect_BadSignature_401(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -129,7 +129,7 @@ func TestProtect_BadSignature_401(t *testing.T) {
 
 func TestProtect_SessionMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -156,7 +156,7 @@ func TestProtect_SessionMismatch_403(t *testing.T) {
 
 func TestProtect_IPMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -181,7 +181,7 @@ func TestProtect_IPMismatch_403(t *testing.T) {
 
 func TestProtect_UAMismatch_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false)
+	mw := Protect(iss, false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -204,7 +204,7 @@ func TestProtect_UAMismatch_403(t *testing.T) {
 
 func TestProtect_MissingScope_403(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false, "form:submit") // requires form:submit
+	mw := Protect(iss, false, "form:submit") // requires form:submit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -227,7 +227,7 @@ func TestProtect_MissingScope_403(t *testing.T) {
 
 func TestProtect_HappyPath(t *testing.T) {
 	iss := NewIssuer(testKey, 120*time.Second)
-	mw := Protect(iss, testKey, false, "public:read")
+	mw := Protect(iss, false, "public:read")
 	var handlerCalled bool
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true

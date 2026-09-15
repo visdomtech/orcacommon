@@ -54,7 +54,7 @@ router.Handle("/api/auth/ephemeral-token",
 
 // Protection on API routes.
 router.Handle("/api/public/data",
-    ephemeralauth.Protect(issuer, signingKey, cfg.TrustProxy, "public:read")(apiHandler))
+    ephemeralauth.Protect(issuer, cfg.TrustProxy, "public:read")(apiHandler))
 ```
 
 ## LiteSPA Server Integration

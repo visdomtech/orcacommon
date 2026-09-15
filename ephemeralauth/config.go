@@ -52,14 +52,6 @@ func (c Config) Issuer() *Issuer {
 	return NewIssuer([]byte(c.SigningKey), c.TTL())
 }
 
-// DefaultScopes returns the configured scopes or the default ["public:read"].
-func (c Config) DefaultScopes() []string {
-	if len(c.Scopes) == 0 {
-		return []string{"public:read"}
-	}
-	return c.Scopes
-}
-
 // LogValue implements slog.LogValuer, redacting the signing key and
 // Turnstile secret.
 func (c Config) LogValue() slog.Value {

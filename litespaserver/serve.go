@@ -300,6 +300,5 @@ func (s *Server) PublicAuthMiddleware() func(http.Handler) http.Handler {
 	if s.publicAuthCfg == nil || s.issuer == nil {
 		return nil
 	}
-	signingKey := []byte(s.publicAuthCfg.SigningKey)
-	return ephemeralauth.Protect(s.issuer, signingKey, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
+	return ephemeralauth.Protect(s.issuer, s.publicAuthCfg.TrustProxy, s.publicAuthCfg.RequiredScopes...)
 }

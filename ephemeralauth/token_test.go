@@ -1,6 +1,7 @@
 package ephemeralauth
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -247,6 +248,44 @@ func TestDeriveKey_DifferentInputsDifferentOutput(t *testing.T) {
 	b := DeriveKey([]byte("key-b"))
 	if string(a) == string(b) {
 		t.Error("DeriveKey() produced same output for different inputs")
+	}
+}
+
+func TestDeriveKey_PanicsOnNilInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("DeriveKey(nil) should panic")
+		}
+	}()
+	DeriveKey(nil)
+}
+
+func TestDeriveKey_PanicsOnEmptyInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("DeriveKey([]byte{}) should panic")
+		}
+	}()
+	DeriveKey([]byte{})
+}
+
+func TestDeriveKey_LongInput(t *testing.T) {
+	long := bytes.Repeat([]byte("a"), 10_000)
+	derived := DeriveKey(long)
+	if len(derived) != 32 {
+		t.Errorf("DeriveKey(10KB) length = %d, want 32", len(derived))
+	}
+}
+
+func TestDeriveKey_32ByteKeyPreserved(t *testing.T) {
+	// A 32-byte key should be returned as-is for backward compatibility.
+	raw := []byte("exactly-32-bytes-long-key!!!!!!!")
+	if len(raw) != 32 {
+		t.Fatalf("test setup error: raw key length = %d, want 32", len(raw))
+	}
+	derived := DeriveKey(raw)
+	if string(derived) != string(raw) {
+		t.Error("DeriveKey() should preserve 32-byte keys for backward compatibility")
 	}
 }
 

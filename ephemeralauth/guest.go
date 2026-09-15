@@ -59,11 +59,17 @@ func GuestSession(signingKey []byte) func(http.Handler) http.Handler {
 // request. Returns the session ID and true if valid, empty string and false
 // otherwise. The signing key is normalised to 32 bytes via DeriveKey internally.
 func GuestSessionID(r *http.Request, signingKey []byte) (string, bool) {
+	return guestSessionIDWithKey(r, DeriveKey(signingKey))
+}
+
+// guestSessionIDWithKey is the internal variant that accepts a pre-derived key,
+// avoiding redundant DeriveKey calls on the hot path.
+func guestSessionIDWithKey(r *http.Request, derivedKey []byte) (string, bool) {
 	cookie, err := r.Cookie(guestCookieName)
 	if err != nil {
 		return "", false
 	}
-	return verifyGuestCookie(cookie.Value, DeriveKey(signingKey))
+	return verifyGuestCookie(cookie.Value, derivedKey)
 }
 
 // signGuestCookie produces the cookie value: <base64url(id)>.<base64url(hmac)>.

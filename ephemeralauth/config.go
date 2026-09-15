@@ -30,7 +30,7 @@ type Config struct {
 
 	// TrustProxy enables reading X-Forwarded-For for client IP extraction.
 	// Default: false (use r.RemoteAddr). Env: EPHEMERAL_TRUST_PROXY.
-	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY"`
+	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY" envDefault:"false"`
 
 	// Scopes is the default scope list issued to new tokens.
 	// Default: ["public:read"]. Env: EPHEMERAL_SCOPES.

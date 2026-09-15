@@ -23,7 +23,7 @@ type issuanceResponse struct {
 // IssuanceHandler returns an http.Handler for the ephemeral token issuance
 // endpoint (POST /api/auth/ephemeral-token).
 func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Handler {
-	signingKey := []byte(cfg.SigningKey) // allocate once, not per request
+	derivedKey := DeriveKey([]byte(cfg.SigningKey)) // derive once, not per request
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -31,7 +31,7 @@ func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Hand
 		}
 
 		// Require a valid guest session cookie.
-		sessionID, ok := GuestSessionID(r, signingKey)
+		sessionID, ok := guestSessionIDWithKey(r, derivedKey)
 		if !ok {
 			http.Error(w, "unauthorized: no valid guest session", http.StatusUnauthorized)
 			return
@@ -73,8 +73,8 @@ func IssuanceHandler(cfg Config, verifier BotVerifier, issuer *Issuer) http.Hand
 		}
 
 		// Compute context binding hashes.
-		ipHash := HashContext(signingKey, remoteIP)
-		uaHash := HashContext(signingKey, r.UserAgent())
+		ipHash := hashContextWithKey(derivedKey, remoteIP)
+		uaHash := hashContextWithKey(derivedKey, r.UserAgent())
 
 		// Issue the token.
 		token, expiresIn, err := issuer.Issue(sessionID, ipHash, uaHash, cfg.DefaultScopes())

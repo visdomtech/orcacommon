@@ -90,7 +90,7 @@ func TestProtect_ExpiredToken_401(t *testing.T) {
 		Scopes: []string{"public:read"},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, _ := tok.SignedString(testKey)
+	signed, _ := tok.SignedString(DeriveKey(testKey))
 
 	req := httptest.NewRequest("GET", "/api/data", nil)
 	req.Header.Set("Authorization", "Bearer "+signed)

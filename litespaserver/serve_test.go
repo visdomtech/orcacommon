@@ -493,6 +493,47 @@ func TestPublicAuthHandler_NilWhenNotConfigured(t *testing.T) {
 	}
 }
 
+func TestNewServer_ShortSigningKey_NoWire(t *testing.T) {
+	spaFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<!DOCTYPE html><html><head></head><body>Test</body></html>`),
+		},
+	}
+	// Signing key is set but shorter than MinSigningKeyLength (32).
+	s := NewServer(t.Context(), nil, Config{
+		EmbeddedContent: spaFS,
+		PublicAuth: &ephemeralauth.Config{
+			SigningKey: "too-short-key",
+		},
+	})
+	// PublicAuth should not be wired when signing key is too short.
+	if s.PublicAuthHandler() != nil {
+		t.Error("PublicAuthHandler() should return nil when signing key is too short")
+	}
+	if s.PublicAuthMiddleware() != nil {
+		t.Error("PublicAuthMiddleware() should return nil when signing key is too short")
+	}
+}
+
+func TestNewServer_EmptySigningKey_NoWire(t *testing.T) {
+	spaFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<!DOCTYPE html><html><head></head><body>Test</body></html>`),
+		},
+	}
+	// PublicAuth is non-nil but SigningKey is empty.
+	s := NewServer(t.Context(), nil, Config{
+		EmbeddedContent: spaFS,
+		PublicAuth:      &ephemeralauth.Config{},
+	})
+	if s.PublicAuthHandler() != nil {
+		t.Error("PublicAuthHandler() should return nil when signing key is empty")
+	}
+	if s.PublicAuthMiddleware() != nil {
+		t.Error("PublicAuthMiddleware() should return nil when signing key is empty")
+	}
+}
+
 func TestPublicAuthHandler_NonNilWhenConfigured(t *testing.T) {
 	cfg := &ephemeralauth.Config{
 		SigningKey:      "test-key-for-auth-handler-test!!",

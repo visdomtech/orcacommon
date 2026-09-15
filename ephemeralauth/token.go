@@ -21,9 +21,9 @@ const maxTokenTTL = 180 * time.Second
 // defaultTokenTTL is used when Config.TokenTTLSeconds is zero.
 const defaultTokenTTL = 120 * time.Second
 
-// minSigningKeyLength is the minimum signing key length in bytes.
+// MinSigningKeyLength is the minimum signing key length in bytes.
 // RFC 7518 §3.2 recommends key length >= hash output size for HMAC.
-const minSigningKeyLength = 32
+const MinSigningKeyLength = 32
 
 // clampTTL clamps a duration to the valid token lifetime range [60s, 180s].
 // Zero or negative values are replaced with the default TTL.
@@ -58,7 +58,7 @@ type Issuer struct {
 // The signing key must be at least 32 bytes (RFC 7518 §3.2).
 // ttl is clamped to [60s, 180s].
 func NewIssuer(signingKey []byte, ttl time.Duration) *Issuer {
-	if len(signingKey) < minSigningKeyLength {
+	if len(signingKey) < MinSigningKeyLength {
 		panic("ephemeralauth: signing key must be at least 32 bytes")
 	}
 	return &Issuer{signingKey: signingKey, ttl: clampTTL(ttl)}

@@ -14,7 +14,7 @@ type Config struct {
 
 	// TokenTTLSeconds is the token lifetime in seconds. Clamped to [60, 180].
 	// Default: 120. Env: EPHEMERAL_TOKEN_TTL_SECONDS.
-	TokenTTLSeconds int `env:"EPHEMERAL_TOKEN_TTL_SECONDS"`
+	TokenTTLSeconds int `env:"EPHEMERAL_TOKEN_TTL_SECONDS" envDefault:"120"`
 
 	// TurnstileSecret is the Cloudflare Turnstile secret for the default
 	// BotVerifier implementation. If empty, the consumer must supply a
@@ -32,7 +32,7 @@ type Config struct {
 
 	// Scopes is the default scope list issued to new tokens.
 	// Default: ["public:read"]. Env: EPHEMERAL_SCOPES.
-	Scopes []string `env:"EPHEMERAL_SCOPES"`
+	Scopes []string `env:"EPHEMERAL_SCOPES" envDefault:"public:read"`
 
 	// RequiredScopes is the list of scopes that must be present in a token
 	// for the protection middleware to allow the request through. When empty,

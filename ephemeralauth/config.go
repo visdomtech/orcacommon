@@ -6,40 +6,49 @@ import (
 )
 
 // Config holds all configuration for the ephemeralauth package.
-// Struct tags follow the caarlos0/env convention.
+// Struct tags follow the caarlos0/env convention. The env key names are
+// intentionally prefix-free so that Config can be embedded in a parent
+// struct with an envPrefix tag:
+//
+//	type AppConfig struct {
+//	    EphemeralAuth ephemeralauth.Config `envPrefix:"EPHEMERAL_"`
+//	}
+//
+// With the prefix above, the effective env var for SigningKey becomes
+// EPHEMERAL_SIGNING_KEY.
 type Config struct {
 	// SigningKey is the HMAC-SHA256 key used for JWT signing and guest
 	// cookie HMAC. Required. Any non-empty value is accepted; it is
 	// normalised to 32 bytes via SHA-256 (DeriveKey).
-	// Env: EPHEMERAL_SIGNING_KEY.
-	SigningKey string `env:"EPHEMERAL_SIGNING_KEY"`
+	// Env: SIGNING_KEY (prefix supplied by embedding struct).
+	SigningKey string `env:"SIGNING_KEY"`
 
 	// TokenTTLSeconds is the token lifetime in seconds. Clamped to [60, 180].
-	// Default: 120. Env: EPHEMERAL_TOKEN_TTL_SECONDS.
-	TokenTTLSeconds int `env:"EPHEMERAL_TOKEN_TTL_SECONDS" envDefault:"120"`
+	// Default: 120. Env: TOKEN_TTL_SECONDS.
+	TokenTTLSeconds int `env:"TOKEN_TTL_SECONDS" envDefault:"120"`
 
 	// TurnstileSecret is the Cloudflare Turnstile secret for the default
 	// BotVerifier implementation. If empty, the consumer must supply a
-	// BotVerifier. Env: EPHEMERAL_TURNSTILE_SECRET.
-	TurnstileSecret string `env:"EPHEMERAL_TURNSTILE_SECRET"`
+	// BotVerifier. Env: TURNSTILE_SECRET.
+	TurnstileSecret string `env:"TURNSTILE_SECRET"`
 
 	// TurnstileSitekey is the Cloudflare Turnstile sitekey for the
 	// frontend widget. This is a public key (not secret) that the
-	// frontend uses to render the challenge. Env: EPHEMERAL_TURNSTILE_SITEKEY.
-	TurnstileSitekey string `env:"EPHEMERAL_TURNSTILE_SITEKEY"`
+	// frontend uses to render the challenge. Env: TURNSTILE_SITEKEY.
+	TurnstileSitekey string `env:"TURNSTILE_SITEKEY"`
 
 	// TrustProxy enables reading X-Forwarded-For for client IP extraction.
-	// Default: false (use r.RemoteAddr). Env: EPHEMERAL_TRUST_PROXY.
-	TrustProxy bool `env:"EPHEMERAL_TRUST_PROXY" envDefault:"false"`
+	// Default: false (use r.RemoteAddr). Env: TRUST_PROXY.
+	TrustProxy bool `env:"TRUST_PROXY" envDefault:"false"`
 
 	// Scopes is the default scope list issued to new tokens.
-	// Default: ["public:read"]. Env: EPHEMERAL_SCOPES.
-	Scopes []string `env:"EPHEMERAL_SCOPES" envDefault:"public:read"`
+	// Default: ["public:read"]. Env: SCOPES.
+	Scopes []string `env:"SCOPES" envDefault:"public:read"`
 
 	// RequiredScopes is the list of scopes that must be present in a token
 	// for the protection middleware to allow the request through. When empty,
-	// any valid token is accepted. Env: EPHEMERAL_REQUIRED_SCOPES.
-	RequiredScopes []string `env:"EPHEMERAL_REQUIRED_SCOPES"`
+	// any valid token is accepted. Env: REQUIRED_SCOPES.
+	RequiredScopes []string `env:"REQUIRED_SCOPES"`
 }
 
 // TTL returns the configured TTL as a time.Duration, clamped to [60s, 180s].

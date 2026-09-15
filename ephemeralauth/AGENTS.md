@@ -27,17 +27,24 @@ All middleware is `func(http.Handler) http.Handler` — compatible with gorilla/
 
 ## Configuration
 
+Config env tags are prefix-free so the struct can be embedded via `envPrefix`:
+
 ```go
-cfg := ephemeralauth.Config{
-    SigningKey:        os.Getenv("EPHEMERAL_SIGNING_KEY"),
-    TokenTTLSeconds:   120,                                   // clamped to [60, 180]
-    TurnstileSecret:   os.Getenv("EPHEMERAL_TURNSTILE_SECRET"),   // optional
-    TurnstileSitekey:  os.Getenv("EPHEMERAL_TURNSTILE_SITEKEY"),  // frontend widget key (public)
-    TrustProxy:        false,                                  // read X-Forwarded-For
-    Scopes:            []string{"public:read"},                // scopes issued to new tokens
-    RequiredScopes:    []string{"public:read"},                // scopes required by Protect middleware
+type AppConfig struct {
+    EphemeralAuth ephemeralauth.Config `envPrefix:"EPHEMERAL_"`
 }
+// Effective env vars: EPHEMERAL_SIGNING_KEY, EPHEMERAL_TOKEN_TTL_SECONDS, etc.
 ```
+
+| Field | Env key (before prefix) | Default | Notes |
+|-------|------------------------|---------|-------|
+| `SigningKey` | `SIGNING_KEY` | *(required)* | HMAC-SHA256 key; normalised via DeriveKey |
+| `TokenTTLSeconds` | `TOKEN_TTL_SECONDS` | `120` | Clamped to [60, 180] |
+| `TurnstileSecret` | `TURNSTILE_SECRET` | *(empty)* | Cloudflare Turnstile server secret |
+| `TurnstileSitekey` | `TURNSTILE_SITEKEY` | *(empty)* | Frontend widget key (public) |
+| `TrustProxy` | `TRUST_PROXY` | `false` | Read X-Forwarded-For |
+| `Scopes` | `SCOPES` | `public:read` | Scopes issued to new tokens |
+| `RequiredScopes` | `REQUIRED_SCOPES` | *(empty)* | Scopes required by Protect middleware |
 
 ## Standalone Usage (gorilla/mux)
 

@@ -37,7 +37,7 @@ func makeGuestCookie(t *testing.T, signingKey []byte) *http.Cookie {
 	}
 	return &http.Cookie{
 		Name:  guestCookieName,
-		Value: signGuestCookie(id, signingKey),
+		Value: signGuestCookie(id, DeriveKey(signingKey)),
 	}
 }
 

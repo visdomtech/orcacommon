@@ -66,30 +66,23 @@ func NewServer(ctx context.Context, pool *pgxpool.Pool, cfg Config) *Server {
 	}
 
 	// Wire ephemeral auth when configured.
-	if cfg.PublicAuth != nil {
-		if len(cfg.PublicAuth.SigningKey) > 0 && len(cfg.PublicAuth.SigningKey) < ephemeralauth.MinSigningKeyLength {
-			slog.Warn("litespaserver: PublicAuth.SigningKey is configured but too short; "+
-				"PublicAuth will not be wired",
-				"key_length", len(cfg.PublicAuth.SigningKey),
-				"min_required", ephemeralauth.MinSigningKeyLength)
-		} else if len(cfg.PublicAuth.SigningKey) >= ephemeralauth.MinSigningKeyLength {
-			s.publicAuthCfg = cfg.PublicAuth
-			signingKey := []byte(cfg.PublicAuth.SigningKey)
-			s.guestMiddleware = ephemeralauth.GuestSession(signingKey)
-			s.issuer = cfg.PublicAuth.Issuer()
+	if cfg.PublicAuth != nil && cfg.PublicAuth.SigningKey != "" {
+		s.publicAuthCfg = cfg.PublicAuth
+		signingKey := []byte(cfg.PublicAuth.SigningKey)
+		s.guestMiddleware = ephemeralauth.GuestSession(signingKey)
+		s.issuer = cfg.PublicAuth.Issuer()
 
-			// Build the bot verifier: use Turnstile if secret is configured,
-			// otherwise the consumer must provide one externally.
-			var verifier ephemeralauth.BotVerifier
-			if cfg.PublicAuth.TurnstileSecret != "" {
-				verifier = ephemeralauth.NewTurnstileVerifier(cfg.PublicAuth.TurnstileSecret)
-			}
-			if verifier != nil {
-				s.issuanceHandler = ephemeralauth.IssuanceHandler(*cfg.PublicAuth, verifier, s.issuer)
-			} else {
-				slog.Warn("litespaserver: PublicAuth is configured but TurnstileSecret is empty; " +
-					"PublicAuthHandler() will return nil")
-			}
+		// Build the bot verifier: use Turnstile if secret is configured,
+		// otherwise the consumer must provide one externally.
+		var verifier ephemeralauth.BotVerifier
+		if cfg.PublicAuth.TurnstileSecret != "" {
+			verifier = ephemeralauth.NewTurnstileVerifier(cfg.PublicAuth.TurnstileSecret)
+		}
+		if verifier != nil {
+			s.issuanceHandler = ephemeralauth.IssuanceHandler(*cfg.PublicAuth, verifier, s.issuer)
+		} else {
+			slog.Warn("litespaserver: PublicAuth is configured but TurnstileSecret is empty; " +
+				"PublicAuthHandler() will return nil")
 		}
 	}
 

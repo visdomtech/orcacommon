@@ -168,7 +168,7 @@ func TestGuest_GuestSessionID_ValidCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateGuestID error: %v", err)
 	}
-	value := signGuestCookie(id, testKey)
+	value := signGuestCookie(id, DeriveKey(testKey))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: guestCookieName, Value: value})
@@ -188,7 +188,7 @@ func TestGuest_GuestSessionID_TamperedCookie(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateGuestID error: %v", err)
 	}
-	value := signGuestCookie(id, testKey)
+	value := signGuestCookie(id, DeriveKey(testKey))
 
 	// Tamper: modify the ID portion.
 	parts := strings.SplitN(value, ".", 2)
@@ -210,14 +210,14 @@ func TestGuest_GuestSessionID_TamperedCookie(t *testing.T) {
 }
 
 func TestGuest_VerifyCookie_InvalidBase64(t *testing.T) {
-	_, ok := verifyGuestCookie("!!!invalid.!!!invalid", testKey)
+	_, ok := verifyGuestCookie("!!!invalid.!!!invalid", DeriveKey(testKey))
 	if ok {
 		t.Error("verifyGuestCookie should reject invalid base64")
 	}
 }
 
 func TestGuest_VerifyCookie_NoDot(t *testing.T) {
-	_, ok := verifyGuestCookie("nodothere", testKey)
+	_, ok := verifyGuestCookie("nodothere", DeriveKey(testKey))
 	if ok {
 		t.Error("verifyGuestCookie should reject cookie without dot separator")
 	}

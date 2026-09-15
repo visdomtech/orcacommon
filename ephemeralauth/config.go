@@ -9,7 +9,9 @@ import (
 // Struct tags follow the caarlos0/env convention.
 type Config struct {
 	// SigningKey is the HMAC-SHA256 key used for JWT signing and guest
-	// cookie HMAC. Required. Env: EPHEMERAL_SIGNING_KEY.
+	// cookie HMAC. Required. Any non-empty value is accepted; it is
+	// normalised to 32 bytes via SHA-256 (DeriveKey).
+	// Env: EPHEMERAL_SIGNING_KEY.
 	SigningKey string `env:"EPHEMERAL_SIGNING_KEY"`
 
 	// TokenTTLSeconds is the token lifetime in seconds. Clamped to [60, 180].

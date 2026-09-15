@@ -21,9 +21,15 @@ const maxTokenTTL = 180 * time.Second
 // defaultTokenTTL is used when Config.TokenTTLSeconds is zero.
 const defaultTokenTTL = 120 * time.Second
 
-// MinSigningKeyLength is the minimum signing key length in bytes.
-// RFC 7518 §3.2 recommends key length >= hash output size for HMAC.
-const MinSigningKeyLength = 32
+// DeriveKey normalises an arbitrary-length signing key to exactly 32 bytes
+// using SHA-256. All public functions in this package call DeriveKey
+// internally, so consumers may supply any non-empty key. Exported for
+// callers that need to derive the key themselves (e.g. for external JWT
+// signing in tests).
+func DeriveKey(raw []byte) []byte {
+	sum := sha256.Sum256(raw)
+	return sum[:]
+}
 
 // clampTTL clamps a duration to the valid token lifetime range [60s, 180s].
 // Zero or negative values are replaced with the default TTL.
@@ -55,13 +61,14 @@ type Issuer struct {
 }
 
 // NewIssuer creates an Issuer from the signing key and TTL.
-// The signing key must be at least 32 bytes (RFC 7518 §3.2).
+// Any non-empty key is accepted; it is normalised to 32 bytes via
+// DeriveKey (SHA-256).
 // ttl is clamped to [60s, 180s].
 func NewIssuer(signingKey []byte, ttl time.Duration) *Issuer {
-	if len(signingKey) < MinSigningKeyLength {
-		panic("ephemeralauth: signing key must be at least 32 bytes")
+	if len(signingKey) == 0 {
+		panic("ephemeralauth: signing key must not be empty")
 	}
-	return &Issuer{signingKey: signingKey, ttl: clampTTL(ttl)}
+	return &Issuer{signingKey: DeriveKey(signingKey), ttl: clampTTL(ttl)}
 }
 
 // Issue creates a signed JWT with the provided context bindings.
@@ -111,10 +118,10 @@ func (iss *Issuer) Verify(tokenString string) (*Claims, error) {
 	return claims, nil
 }
 
-// HashContext computes HMAC-SHA256(key, value), truncated to 16 bytes, base64url-encoded.
-// Used for IP and User-Agent context binding.
+// HashContext computes HMAC-SHA256(DeriveKey(key), value), truncated to 16 bytes,
+// base64url-encoded. Used for IP and User-Agent context binding.
 func HashContext(key []byte, value string) string {
-	h := hmac.New(sha256.New, key)
+	h := hmac.New(sha256.New, DeriveKey(key))
 	h.Write([]byte(value))
 	sum := h.Sum(nil)[:16]
 	return encodeBase64URL(sum)

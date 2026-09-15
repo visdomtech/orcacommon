@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/visdomtech/orcacommon/ephemeralauth"
 )
 
 // Do makes an HTTP request to the e2e server with a JSON body and decodes
@@ -253,13 +255,14 @@ func NewClientWithJar(t *testing.T) *http.Client {
 }
 
 // CraftJWT creates a JWT with custom header and payload JSON strings,
-// signed with HMAC-SHA256 using the given key. Used for testing algorithm
-// confusion and expiry attacks.
+// signed with HMAC-SHA256 using the derived key (DeriveKey).
+// Used for testing algorithm confusion and expiry attacks.
 func CraftJWT(t *testing.T, signingKey []byte, headerJSON, payloadJSON string) string {
 	t.Helper()
+	derived := ephemeralauth.DeriveKey(signingKey)
 	h := base64URLEncode([]byte(headerJSON))
 	p := base64URLEncode([]byte(payloadJSON))
-	mac := hmacSHA256(signingKey, h+"."+p)
+	mac := hmacSHA256(derived, h+"."+p)
 	sig := base64URLEncode(mac)
 	return h + "." + p + "." + sig
 }

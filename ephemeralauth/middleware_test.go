@@ -30,7 +30,7 @@ func makeSessionCookie(t *testing.T, key []byte) (*http.Cookie, string) {
 		t.Fatalf("generateGuestID: %v", err)
 	}
 	sessionID := encodeBase64URL(id)
-	value := signGuestCookie(id, key)
+	value := signGuestCookie(id, DeriveKey(key))
 	return &http.Cookie{
 		Name:  guestCookieName,
 		Value: value,

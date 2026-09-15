@@ -493,25 +493,26 @@ func TestPublicAuthHandler_NilWhenNotConfigured(t *testing.T) {
 	}
 }
 
-func TestNewServer_ShortSigningKey_NoWire(t *testing.T) {
+func TestNewServer_ShortSigningKey_Wired(t *testing.T) {
 	spaFS := fstest.MapFS{
 		"index.html": &fstest.MapFile{
 			Data: []byte(`<!DOCTYPE html><html><head></head><body>Test</body></html>`),
 		},
 	}
-	// Signing key is set but shorter than MinSigningKeyLength (32).
+	// Short signing key is accepted — DeriveKey normalises it to 32 bytes.
 	s := NewServer(t.Context(), nil, Config{
 		EmbeddedContent: spaFS,
 		PublicAuth: &ephemeralauth.Config{
-			SigningKey: "too-short-key",
+			SigningKey:      "short",
+			TurnstileSecret: "test-secret",
 		},
 	})
-	// PublicAuth should not be wired when signing key is too short.
-	if s.PublicAuthHandler() != nil {
-		t.Error("PublicAuthHandler() should return nil when signing key is too short")
+	// PublicAuth should be wired even with a short key.
+	if s.PublicAuthHandler() == nil {
+		t.Error("PublicAuthHandler() should return non-nil for short signing key")
 	}
-	if s.PublicAuthMiddleware() != nil {
-		t.Error("PublicAuthMiddleware() should return nil when signing key is too short")
+	if s.PublicAuthMiddleware() == nil {
+		t.Error("PublicAuthMiddleware() should return non-nil for short signing key")
 	}
 }
 
@@ -627,7 +628,8 @@ func makeSessionCookieForTest(t *testing.T, key []byte) (*http.Cookie, string) {
 	for i := range id {
 		id[i] = byte(i)
 	}
-	h := hmacSHA256(id, key)
+	derived := ephemeralauth.DeriveKey(key)
+	h := hmacSHA256(id, derived)
 	value := encodeB64URL(id) + "." + encodeB64URL(h)
 	return &http.Cookie{
 		Name:  "guest_session",

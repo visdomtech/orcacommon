@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/visdomtech/orcacommon/compare/v0.7.1...v0.7.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* remove EPHEMERAL_ prefix from Config env tags for envPrefix embedding ([#23](https://github.com/visdomtech/orcacommon/issues/23)) ([1aa965c](https://github.com/visdomtech/orcacommon/commit/1aa965c47d8c39bbddbba6e7f7aa8257aee0a35f))
+
 ## [0.7.1](https://github.com/visdomtech/orcacommon/compare/v0.7.0...v0.7.1) (2026-09-15)
 
 

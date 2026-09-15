@@ -286,7 +286,7 @@ func hmacSHA256(key []byte, message string) []byte {
 }
 
 // SigningKey is the test signing key (must match the e2e server constant).
-const SigningKey = "e2e-test-signing-key-must-be-long-enough"
+const SigningKey = "e2e-test-signing-key"
 
 // TamperJWT flips a character in the payload section of a JWT to invalidate
 // the signature. Returns the tampered JWT string.

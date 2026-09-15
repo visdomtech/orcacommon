@@ -25,7 +25,7 @@ import (
 
 const (
 	manifestPath = "/tmp/orcacommon-e2e-server.json"
-	signingKey   = "e2e-test-signing-key-must-be-long-enough"
+	signingKey   = "e2e-test-signing-key"
 )
 
 func main() {

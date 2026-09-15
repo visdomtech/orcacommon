@@ -23,6 +23,7 @@ All middleware is `func(http.Handler) http.Handler` — compatible with gorilla/
 | `issuance.go` | IssuanceHandler (POST endpoint, 1KB body limit) |
 | `middleware.go` | Protect middleware (stateless verification, scope enforcement) |
 | `helpers.go` | base64url encode/decode |
+| `frontend-integration.md` | Frontend integration contract: Turnstile widget setup, token issuance, renewal flow, and reference JS implementation |
 
 ## Configuration
 
@@ -72,61 +73,7 @@ mux.Handle("/api/public/*", server.PublicAuthMiddleware()(apiHandler))
 
 ## Frontend Integration Contract
 
-### Token Endpoint
-
-```
-POST /api/auth/ephemeral-token
-Content-Type: application/json
-
-{
-  "bot_token": "<turnstile-response-token>"
-}
-```
-
-**Requirements:**
-- Must include the guest session cookie (`credentials: "include"` / same-origin)
-- The `bot_token` is obtained from the Cloudflare Turnstile widget challenge
-
-**Success Response (200):**
-```json
-{
-  "token": "<JWT>",
-  "expires_in": 120
-}
-```
-
-**Error Responses:**
-- `401` — No valid guest session cookie → solve/re-solve the Turnstile challenge first, then retry
-- `400` — Missing or malformed `bot_token`, or request body exceeds 1KB limit
-- `403` — Bot verification failed (low score or error)
-- `405` — Method not allowed (only POST)
-
-### Using the Token
-
-```
-Authorization: Bearer <token>
-```
-
-Include this header on all protected API requests.
-
-### Cookie Requirement
-
-The guest session cookie must be sent with every request to the token endpoint and protected API routes. Frontends must use `credentials: "include"` (fetch) or `withCredentials: true` (XMLHttpRequest) and ensure same-origin.
-
-### Refresh Flow (401 → Re-solve → Refresh → Retry Once)
-
-1. Protected API call returns `401`
-2. Re-solve the Turnstile challenge (render widget again)
-3. `POST /api/auth/ephemeral-token` with new `bot_token` + guest cookie
-4. Retry the original API call with the new token
-
-Do NOT retry more than once without user interaction.
-
-### Token Lifetime
-
-- `expires_in` is always ≤ 180 seconds
-- Frontends should treat tokens as opaque — do not decode or cache beyond `expires_in`
-- After a 401, always re-issue rather than reusing an expired token
+See [frontend-integration.md](frontend-integration.md) for the complete frontend integration contract, including architecture overview, request flow diagram, Turnstile widget setup, token renewal flow, and a reference JavaScript implementation.
 
 ## Security Notes
 

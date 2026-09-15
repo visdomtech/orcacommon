@@ -91,7 +91,7 @@ Unless `EmbeddedContent` is used, consumers must create the `litespa_settings` t
 
 When `Config.PublicAuth` is set to a non-nil `*ephemeralauth.Config`, the server:
 
-1. **Applies guest session middleware** to `ServeRoot` — SPA page responses automatically set/refresh a `guest_session` HMAC-signed cookie.
+1. **Applies guest session middleware** to `ServeRoot` — this is **cookie bootstrapping, not protection**. The `GuestSession` middleware never blocks requests; it only provisions a `guest_session` HMAC-signed cookie on the initial page load so the browser has it available for subsequent token issuance calls. The SPA page itself remains publicly accessible — the real gate is on the API endpoints (token issuance validates the cookie, and `Protect` middleware validates both the cookie and the JWT). The wrapped handler is cached in `wrappedServeRoot` at construction time to avoid per-request closure allocations.
 2. **Exposes `PublicAuthHandler()`** — returns the `POST /api/auth/ephemeral-token` issuance handler (nil when not configured).
 3. **Exposes `PublicAuthMiddleware()`** — returns stateless protection middleware enforcing signature, expiry, context binding (session/IP/UA), and `RequiredScopes` (nil when not configured).
 
@@ -109,3 +109,24 @@ When `PublicAuth` is nil, all three methods return nil and `ServeRoot` behavior 
 **Bot verifier:** When `PublicAuth.TurnstileSecret` is non-empty, a `TurnstileVerifier` is constructed automatically. If empty, `PublicAuthHandler()` returns nil (consumer must provide an external verifier via standalone `ephemeralauth` usage).
 
 **Scope enforcement:** Set `PublicAuth.RequiredScopes` to enforce scope checks in `PublicAuthMiddleware()`. When empty, any valid token is accepted.
+
+**Request lifecycle with PublicAuth:**
+```
+1. Browser → GET / (ServeRoot)
+   GuestSession middleware: no valid cookie → generates session ID,
+   signs it with HMAC, sets guest_session cookie via Set-Cookie.
+   Page is served regardless. (Bootstrapping, not gating.)
+
+2. SPA JS boots → renders Turnstile widget → solves challenge
+   → obtains bot_token (client-side, from Cloudflare widget callback)
+
+3. Browser → POST /api/auth/ephemeral-token { bot_token }
+   Server validates: guest cookie (from step 1) + Turnstile token
+   (via Cloudflare siteverify) → issues short-lived JWT bound to
+   session ID, IP hash, and UA hash.
+
+4. Browser → GET /api/public/data
+   Authorization: Bearer <jwt>
+   Protect middleware: verifies JWT signature + expiry, checks
+   session/IP/UA binding match, checks scopes → passes or rejects.
+```

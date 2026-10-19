@@ -64,6 +64,10 @@ func CheckPIDFile(dataPath string) (exists bool, alive bool, pid int, err error)
 			if findErr == nil {
 				// Signal 0 tests process existence without killing it (POSIX)
 				if sigErr := process.Signal(syscall.Signal(0)); sigErr == nil {
+					// Process exists; check if it's a zombie (exited but not reaped).
+					if isZombieProcess(parsedPID) {
+						return true, false, parsedPID, nil
+					}
 					return true, true, parsedPID, nil
 				}
 			}
@@ -152,6 +156,10 @@ func ReuseEmbeddedPG(dataPath string) (running bool, port int) {
 		return false, 0
 	}
 	if sigErr := process.Signal(syscall.Signal(0)); sigErr != nil {
+		return false, 0
+	}
+	// Process exists; reject zombies (exited but not yet reaped).
+	if isZombieProcess(pid) {
 		return false, 0
 	}
 
@@ -244,9 +252,11 @@ func IsPostgresProcess(pid int) bool {
 	return lower == "postgres" || lower == "postmaster"
 }
 
-// IsProcessAlive reports whether a process with the given pid exists and is
-// reachable via Signal(0). On Unix, os.FindProcess always succeeds, so the
-// Signal(0) probe is the real liveness check.
+// IsProcessAlive reports whether a process with the given pid is alive and
+// not a zombie. On Unix, os.FindProcess always succeeds, so the Signal(0)
+// probe is the initial liveness check. On Linux, /proc/pid/stat is also
+// consulted to detect zombie processes (state 'Z'), which still respond to
+// Signal(0) but have exited and are waiting to be reaped.
 func IsProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -255,7 +265,13 @@ func IsProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return process.Signal(syscall.Signal(0)) == nil
+	if process.Signal(syscall.Signal(0)) != nil {
+		return false
+	}
+	// Signal(0) succeeded — the process exists. On Linux, check if it's a
+	// zombie (exited but not yet reaped). Zombies respond to Signal(0) but
+	// are not actually running.
+	return !isZombieProcess(pid)
 }
 
 // parsePostmasterInfo reads the PID (line 1) and port (line 4) from the
@@ -289,4 +305,24 @@ func parsePostmasterInfo(dataPath string) (pid int, port int, err error) {
 		return 0, 0, fmt.Errorf("read postmaster.pid: %w", scanErr)
 	}
 	return 0, 0, fmt.Errorf("postmaster.pid has fewer than 4 lines")
+}
+
+// isZombieProcess checks if a process is a zombie (exited but not yet reaped)
+// by reading /proc/pid/stat on Linux. On systems without /proc (macOS), it
+// returns false since zombies are typically auto-reaped by the parent.
+func isZombieProcess(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		// /proc not available (non-Linux) or process already gone.
+		return false
+	}
+	// /proc/pid/stat format: "pid (comm) state ..."
+	// Find the closing paren of comm, then the next field is state.
+	s := string(data)
+	closeParen := strings.LastIndex(s, ")")
+	if closeParen < 0 || closeParen+2 >= len(s) {
+		return false
+	}
+	// State is the first character after ") "
+	return s[closeParen+2] == 'Z'
 }

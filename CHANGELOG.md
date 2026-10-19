@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/visdomtech/orcacommon/compare/v0.7.2...v0.8.0) (2026-10-19)
+
+
+### Features
+
+* **postgres:** add ClosePoolWithKey for keyed pool teardown ([#25](https://github.com/visdomtech/orcacommon/issues/25)) ([689426c](https://github.com/visdomtech/orcacommon/commit/689426c93bb130fafd38023d8c788aa2832d0549))
+
 ## [0.7.2](https://github.com/visdomtech/orcacommon/compare/v0.7.1...v0.7.2) (2026-09-15)
 
 

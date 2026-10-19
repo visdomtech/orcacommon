@@ -26,17 +26,95 @@ import (
 	"github.com/visdomtech/orcacommon/utils"
 )
 
-var (
-	keyedPools    = make(map[string]*pgxpool.Pool)
-	keyedPoolLock sync.RWMutex
+// cloudDialer abstracts a Cloud SQL connector for dependency injection.
+type cloudDialer interface {
+	Dial(ctx context.Context, instance string, opts ...cloudsqlconn.DialOption) (net.Conn, error)
+	Close() error
+}
 
-	// embeddedInstance tracks a running embedded Postgres along with the data
-	// path used at startup. The data path is needed to read postmaster.pid
-	// for force-kill fallback during graceful shutdown.
+// newCloudDialer creates a Cloud SQL dialer. Replaced in tests.
+var newCloudDialer = func(ctx context.Context) (cloudDialer, error) {
+	return cloudsqlconn.NewDialer(ctx, cloudsqlconn.WithLazyRefresh())
+}
+
+// poolRegistry is the process-wide registry of keyed database pools.
+var poolRegistry poolRegistryType
+
+// poolRegistryType tracks keyed database pools and their acquired resources.
+type poolRegistryType struct {
+	mu      sync.Mutex
+	entries map[string]*registryEntry
+}
+
+// registryEntry holds one keyed pool and the resources acquired during its
+// creation (Cloud SQL dialers, test containers, etc.).
+type registryEntry struct {
+	mu        sync.Mutex
+	pool      *pgxpool.Pool
+	resources []acquiredResource
+}
+
+// acquiredResource is a named cleanup callback attached to a registry entry.
+type acquiredResource struct {
+	name    string
+	release func(context.Context) error
+}
+
+func (r *poolRegistryType) entryFor(key string) *registryEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.entries[key]
+}
+
+func (r *poolRegistryType) newEntry(key string) *registryEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.entries == nil {
+		r.entries = make(map[string]*registryEntry)
+	}
+	e := &registryEntry{}
+	r.entries[key] = e
+	return e
+}
+
+func (r *poolRegistryType) remove(key string) *registryEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.entries[key]
+	delete(r.entries, key)
+	return e
+}
+
+// attachAcquired records a resource under an existing entry, standing in for
+// the Cloud SQL dialer or TestContainer that Connect() would have provisioned.
+func (r *poolRegistryType) attachAcquired(e *registryEntry, name string, release func(context.Context) error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.resources = append(e.resources, acquiredResource{name: name, release: release})
+}
+
+// releaseAll invokes every resource's release callback in reverse acquisition
+// order (most recent first). All callbacks run even if one fails.
+func (e *registryEntry) releaseAll(ctx context.Context) {
+	e.mu.Lock()
+	resources := make([]acquiredResource, len(e.resources))
+	copy(resources, e.resources)
+	e.resources = nil
+	e.mu.Unlock()
+	for i := len(resources) - 1; i >= 0; i-- {
+		if err := resources[i].release(ctx); err != nil {
+			slog.Warn("failed to release acquired resource", "resource", resources[i].name, "error", err)
+		}
+	}
+}
+
+var (
+	// embeddedInstances tracks running embedded Postgres processes along with
+	// the data path and PID needed for graceful shutdown.
 	embeddedInstances = make(map[string]embeddedInstance)
 	embeddedPGLock    sync.Mutex
 
-	// stopTimeout is the maximum time allowed for pg.Stop() (pg_ctl stop)
+	// stopTimeout is the maximum time allowed for Postgres shutdown
 	// before force-killing the process. Exported as a var for test overrides.
 	stopTimeout = 15 * time.Second
 
@@ -45,17 +123,17 @@ var (
 	// all cleanup (pool closing, embedded Postgres stop) has finished.
 	shutdownDone = make(chan struct{})
 
-	// shuttingDown is set to true when gracefulShutdown begins its
-	// snapshot-and-clear cycle. Connect() checks this flag to refuse
-	// new embedded instance registrations after shutdown has started,
-	// closing the straggler window.
+	// shuttingDown is set to true when gracefulShutdown begins.
+	// Connect() checks this flag to refuse new embedded instance
+	// registrations after shutdown has started.
 	shuttingDown atomic.Bool
 )
 
 type embeddedInstance struct {
-	pg       *embeddedpostgres.EmbeddedPostgres // nil for reused instances (not started by this process)
-	dataPath string
-	reused   bool // true when Connect detected an already-running instance at the data path
+	pid          int    // Postgres process PID; 0 means no process to stop
+	dataPath     string // Postgres data directory (for PID file verification and cleanup)
+	ownsDataPath bool   // true when Connect auto-created the data directory (cleaned up on stop)
+	runtimePath  string // library runtime directory containing binaries and pwfile (cleaned up on stop)
 }
 
 func init() {
@@ -97,93 +175,114 @@ func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool
 	return OpenPoolWithKey(ctx, dbcfg, migrator, "__shared__")
 }
 
-// OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found, it is created with the given key and save in the pools.
-// the cached pool will be returned directly on the second time it is called with given key.
+// OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found,
+// it is created with the given key and saved in the registry. The cached pool
+// will be returned directly on subsequent calls with the same key.
 func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
 	if key == "" {
 		return nil, errors.New("non-empty key is required")
 	}
-	keyedPoolLock.RLock()
-	pool, found := keyedPools[key]
-	keyedPoolLock.RUnlock()
 
+	// Fast path: return cached pool.
+	if e := poolRegistry.entryFor(key); e != nil {
+		e.mu.Lock()
+		pool := e.pool
+		e.mu.Unlock()
+		if pool != nil {
+			return pool, nil
+		}
+	}
+
+	// Slow path: create pool under lock.
+	poolRegistry.mu.Lock()
+	e := poolRegistry.entries[key]
+	if e != nil {
+		e.mu.Lock()
+		pool := e.pool
+		e.mu.Unlock()
+		if pool != nil {
+			poolRegistry.mu.Unlock()
+			return pool, nil
+		}
+	}
+	e = &registryEntry{}
+	if poolRegistry.entries == nil {
+		poolRegistry.entries = make(map[string]*registryEntry)
+	}
+	poolRegistry.entries[key] = e
+	poolRegistry.mu.Unlock()
+
+	var pool *pgxpool.Pool
 	var err error
-	if found {
-		goto runMigration
+	if dbcfg.CloudSQLInstance != "" {
+		pool, err = openCloudSQL(ctx, dbcfg, e)
+	} else {
+		pool, err = Connect(ctx, dbcfg.ResolveURL(), key)
 	}
-
-	keyedPoolLock.Lock()
-	defer keyedPoolLock.Unlock()
-	if pool, found = keyedPools[key]; found {
-		goto runMigration
-	}
-
-	if pool, err = createPool(ctx, dbcfg, migrator, key); err == nil {
-		keyedPools[key] = pool
-	}
-runMigration:
-	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-		pool.Close()
+	if err != nil {
+		poolRegistry.remove(key)
 		return nil, err
 	}
-	return pool, err
+
+	e.mu.Lock()
+	e.pool = pool
+	e.mu.Unlock()
+
+	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+		pool.Close()
+		poolRegistry.remove(key)
+		return nil, err
+	}
+	return pool, nil
 }
 
 // ClosePoolWithKey releases one keyed database pool created by OpenPoolWithKey.
-// It closes the cached pgxpool, removes it from the keyed-pool cache, and stops
-// the embedded Postgres instance registered under the same key. The pool is
-// closed before the embedded instance is stopped, matching graceful shutdown
-// ordering. An empty key returns an error. An unknown key is a silent no-op
-// and returns nil. After a successful close, OpenPoolWithKey with the same key
-// creates a fresh pool.
+// It closes the cached pgxpool, releases acquired resources (Cloud SQL dialers,
+// test containers) in reverse acquisition order, and stops the embedded Postgres
+// instance registered under the same key. The pool is closed before resources
+// are released and before the embedded instance is stopped, matching graceful
+// shutdown ordering. An empty key returns an error. An unknown key is a silent
+// no-op and returns nil. After a successful close, OpenPoolWithKey with the
+// same key creates a fresh pool.
 //
 // Closing the "__shared__" pool (OpenPool) is allowed but drops the
 // process-wide singleton; no ClosePool() wrapper is provided.
-func ClosePoolWithKey(key string) error {
+func ClosePoolWithKey(ctx context.Context, key string) error {
 	if key == "" {
 		return errors.New("non-empty key is required")
 	}
 
-	keyedPoolLock.Lock()
-	pool, hadPool := keyedPools[key]
-	delete(keyedPools, key)
-	keyedPoolLock.Unlock()
+	entry := poolRegistry.remove(key)
 
 	embeddedPGLock.Lock()
 	inst, hadInstance := embeddedInstances[key]
 	delete(embeddedInstances, key)
 	embeddedPGLock.Unlock()
 
-	if !hadPool && !hadInstance {
+	if entry == nil && !hadInstance {
 		slog.Debug("no database pool or embedded Postgres registered for key", "key", key)
 		return nil
 	}
 
-	// Close the pool before stopping the database server, and never hold either
-	// lock while doing so: stopWithForceKill can block up to stopTimeout.
-	if hadPool {
-		pool.Close()
+	// Close pool first so release callbacks observe puddle.ErrClosedPool.
+	if entry != nil {
+		entry.mu.Lock()
+		pool := entry.pool
+		entry.pool = nil
+		entry.mu.Unlock()
+		if pool != nil {
+			pool.Close()
+		}
+		entry.releaseAll(ctx)
 	}
+
+	// Stop embedded Postgres after pool and resources are released.
 	if hadInstance {
 		stopWithForceKill(key, inst)
 	}
 
-	slog.Info("closed keyed database pool", "key", key, "hadPool", hadPool, "stoppedEmbeddedPostgres", hadInstance)
+	slog.Info("closed keyed database pool", "key", key, "hadPool", entry != nil, "stoppedEmbeddedPostgres", hadInstance)
 	return nil
-}
-
-func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
-	var pool *pgxpool.Pool
-	var err error
-	if dbcfg.CloudSQLInstance != "" {
-		pool, err = openCloudSQL(ctx, dbcfg)
-	} else {
-		pool, err = Connect(ctx, dbcfg.ResolveURL(), key)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return pool, nil
 }
 
 // gracefulShutdown blocks until SIGTERM or SIGINT is received, then closes
@@ -191,9 +290,8 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 // intended to be launched as a goroutine from init() and should not be
 // called directly.
 //
-// Embedded Postgres instances are stopped with a timeout: if pg_ctl stop
-// does not complete within the deadline, or if the process survives the
-// graceful stop, the process is force-killed via SIGKILL.
+// Embedded Postgres instances are stopped with a timeout: if the process
+// does not exit within the deadline, it is force-killed via SIGKILL.
 func gracefulShutdown() {
 	defer close(shutdownDone)
 	shutdownStart := time.Now()
@@ -203,19 +301,29 @@ func gracefulShutdown() {
 	shuttingDown.Store(true)
 	slog.Info("received shutdown signal, closing database pools", "signal", sig)
 
-	// Close connection pools first so they can cleanly drain before the DB servers stop.
-	keyedPoolLock.Lock()
-	slog.Info("closing the keyed pools", "count", len(keyedPools))
-	for _, pool := range keyedPools {
-		pool.Close()
+	// Close all pools and their resources first.
+	poolRegistry.mu.Lock()
+	entries := make(map[string]*registryEntry, len(poolRegistry.entries))
+	for k, v := range poolRegistry.entries {
+		entries[k] = v
 	}
-	clear(keyedPools)
-	keyedPoolLock.Unlock()
+	clear(poolRegistry.entries)
+	poolRegistry.mu.Unlock()
+
+	for key, entry := range entries {
+		entry.mu.Lock()
+		pool := entry.pool
+		entry.pool = nil
+		entry.mu.Unlock()
+		if pool != nil {
+			pool.Close()
+		}
+		entry.releaseAll(context.Background())
+		_ = key
+	}
 	slog.Info("closed all database connection pools", "elapsed", time.Since(shutdownStart))
 
 	// Stop embedded Postgres instances after pools are closed.
-	// Snapshot the map under the lock, then stop outside the lock
-	// to minimize contention and allow parallel stop attempts.
 	instances := snapshotAndClearEmbeddedInstances()
 
 	slog.Info("stopping embedded Postgres instances", "count", len(instances))
@@ -231,8 +339,6 @@ func gracefulShutdown() {
 
 	// Re-check for stragglers: a concurrent Connect() may have added
 	// an instance between our initial snapshot and wg.Wait() returning.
-	// (The shuttingDown flag prevents new registrations, but instances
-	// registered before the flag was set may still appear here.)
 	stragglers := snapshotAndClearEmbeddedInstances()
 	for k, inst := range stragglers {
 		slog.Warn("stopping straggler embedded Postgres added during shutdown", "key", k)
@@ -244,77 +350,84 @@ func gracefulShutdown() {
 
 // stopWithForceKill stops an embedded Postgres instance with a timeout and
 // SIGKILL force-kill fallback. It is used by gracefulShutdown, Connect()
-// replacement, and Connect() error-cleanup to ensure pg_ctl stop never hangs
-// indefinitely and the process is always terminated.
+// replacement, and Connect() error-cleanup to ensure Postgres never blocks
+// shutdown indefinitely.
 //
-// The graceful pg.Stop() is given stopTimeout seconds; if it fails or the
-// process survives, SIGKILL is sent via KillEmbeddedPG. After a confirmed
-// force-kill, the stale postmaster.pid is removed so the library can restart
-// cleanly on the next app launch.
+// SIGTERM is sent via sendPostgresSIGTERM (which verifies the process is
+// Postgres before signaling). The process is then given stopTimeout to exit;
+// if it survives, SIGKILL is sent. After a confirmed stop, owned directories
+// (runtime path, auto-created data path) are removed.
 func stopWithForceKill(key string, inst embeddedInstance) {
 	start := time.Now()
-	// Send SIGTERM directly to the Postgres process to initiate a fast
-	// graceful shutdown. This avoids relying solely on pg_ctl stop -w (called
-	// by the library's pg.Stop()), which can hang indefinitely when the
-	// pg_ctl subprocess does not respond.
 	sendPostgresSIGTERM(key, inst.dataPath)
 
-	var stopSucceeded bool
-	if inst.pg != nil {
-		// Run pg.Stop() with a deadline so a hanging pg_ctl does not block the caller.
-		// If the timeout fires, this goroutine is intentionally abandoned —
-		// it will unblock once SIGKILL reaps the child process.
-		stopErr := make(chan error, 1)
-		go func() {
-			err := inst.pg.Stop()
-			stopErr <- err
-			// If the timeout already fired and the caller moved on,
-			// this log provides observability on the abandoned goroutine.
-			slog.Debug("abandoned pg.Stop() goroutine eventually returned", "key", key, "error", err)
-		}()
+	// Wait for the process to exit with a deadline.
+	deadline := time.After(stopTimeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-		stopTimer := time.NewTimer(stopTimeout)
+	processConfirmedDead := false
+	for !processConfirmedDead {
 		select {
-		case err := <-stopErr:
-			stopTimer.Stop()
-			if err != nil {
-				slog.Warn("graceful stop failed, will attempt force-kill", "key", key, "error", err)
-			} else {
-				slog.Info("gracefully stopped embedded Postgres", "key", key, "elapsed", time.Since(start))
-				stopSucceeded = true
+		case <-deadline:
+			slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout)
+			goto forceKill
+		case <-ticker.C:
+			if inst.pid > 0 && !utils.IsProcessAlive(inst.pid) {
+				slog.Info("embedded Postgres stopped", "key", key, "elapsed", time.Since(start))
+				processConfirmedDead = true
 			}
-		case <-stopTimer.C:
-			slog.Warn("graceful stop timed out, will attempt force-kill", "key", key, "timeout", stopTimeout, "elapsed", time.Since(start))
+			// Also check PID file as fallback (e.g., reused instances).
+			if !processConfirmedDead && inst.dataPath != "" {
+				_, alive, _, _ := utils.CheckPIDFile(inst.dataPath)
+				if !alive {
+					processConfirmedDead = true
+				}
+			}
+			// If no PID and no data path, nothing to wait for.
+			if inst.pid <= 0 && inst.dataPath == "" {
+				processConfirmedDead = true
+			}
 		}
 	}
-	// For reused instances (pg == nil), SIGTERM was already sent above.
-	// Fall through to PID verification and force-kill if needed.
 
-	// Verify the process is actually dead by checking the PID file.
-	// If alive, force-kill it.
-	if inst.dataPath != "" {
-		_, alive, pid, err := utils.CheckPIDFile(inst.dataPath)
-		pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
-		if err != nil {
-			slog.Warn("could not read postmaster.pid after stop", "key", key, "error", err)
-		} else if alive && pid > 0 {
-			slog.Warn("embedded Postgres still alive after Stop(), sending SIGKILL", "key", key, "pid", pid)
-			if killErr := utils.KillEmbeddedPG(pid); killErr != nil {
-				if errors.Is(killErr, utils.ErrNotPostgresProcess) {
-					slog.Warn("PID is not a Postgres process, removing stale PID file only", "key", key, "pid", pid)
-					removeStalePIDFile(key, pidFile)
-				} else {
-					slog.Error("failed to force-kill embedded Postgres", "key", key, "pid", pid, "error", killErr)
-				}
+forceKill:
+	if !processConfirmedDead && inst.pid > 0 {
+		slog.Warn("embedded Postgres still alive, sending SIGKILL", "key", key, "pid", inst.pid)
+		if killErr := utils.KillEmbeddedPG(inst.pid); killErr != nil {
+			if errors.Is(killErr, utils.ErrNotPostgresProcess) {
+				slog.Warn("PID is not a Postgres process, removing stale PID file only", "key", key, "pid", inst.pid)
 			} else {
-				slog.Info("force-killed embedded Postgres", "key", key, "pid", pid, "elapsed", time.Since(start))
-				removeStalePIDFile(key, pidFile)
+				slog.Error("failed to force-kill embedded Postgres", "key", key, "pid", inst.pid, "error", killErr)
 			}
-		} else if !stopSucceeded && !alive && pid > 0 {
-			// pg.Stop() failed or timed out but the process is already dead.
-			// Clean up the stale PID file.
-			slog.Debug("process already dead, removing stale postmaster.pid", "key", key, "pid", pid)
-			removeStalePIDFile(key, pidFile)
+		} else {
+			slog.Info("force-killed embedded Postgres", "key", key, "pid", inst.pid)
+		}
+	}
+
+	// Final liveness check: only remove files/directories if the process is
+	// actually dead. A non-Postgres process at the same PID means we must
+	// not touch the directories it may still be using.
+	if inst.pid > 0 && utils.IsProcessAlive(inst.pid) {
+		slog.Warn("process still alive after stop attempt, skipping directory cleanup", "key", key, "pid", inst.pid)
+		return
+	}
+
+	// Clean up PID file.
+	if inst.dataPath != "" {
+		pidFile := filepath.Join(inst.dataPath, "postmaster.pid")
+		removeStalePIDFile(key, pidFile)
+	}
+
+	// Clean up directories we created.
+	if inst.runtimePath != "" {
+		if err := os.RemoveAll(inst.runtimePath); err != nil {
+			slog.Warn("could not remove runtime directory", "key", key, "path", inst.runtimePath, "error", err)
+		}
+	}
+	if inst.ownsDataPath && inst.dataPath != "" {
+		if err := os.RemoveAll(inst.dataPath); err != nil {
+			slog.Warn("could not remove auto-created data directory", "key", key, "path", inst.dataPath, "error", err)
 		}
 	}
 }
@@ -344,12 +457,11 @@ func removeStalePIDFile(key string, pidFile string) {
 // sendPostgresSIGTERM reads the PID from the postmaster.pid file and sends
 // SIGTERM directly to the Postgres process. This initiates a graceful
 // Postgres shutdown (equivalent to pg_ctl stop -m smart) without going
-// through the pg_ctl subprocess, which can hang. When called before
-// pg.Stop(), it ensures Postgres is already shutting down by the time
-// pg_ctl runs, making pg.Stop() return quickly.
+// through the pg_ctl subprocess, which can hang. When called before the
+// wait loop, it ensures Postgres is already shutting down, making the
+// wait return quickly.
 //
-// On Windows (or when the data path is empty), this is a no-op — the
-// library's pg.Stop() is the only shutdown path.
+// On Windows (or when the data path is empty), this is a no-op.
 func sendPostgresSIGTERM(key string, dataPath string) {
 	if dataPath == "" {
 		return
@@ -381,11 +493,14 @@ func sendPostgresSIGTERM(key string, dataPath string) {
 	slog.Info("sent SIGTERM to embedded Postgres", "key", key, "pid", pid)
 }
 
-func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
-	d, err := cloudsqlconn.NewDialer(ctx, cloudsqlconn.WithLazyRefresh())
+func openCloudSQL(ctx context.Context, dbcfg DBConfig, entry *registryEntry) (*pgxpool.Pool, error) {
+	d, err := newCloudDialer(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new Cloud SQL dialer: %w", err)
 	}
+	poolRegistry.attachAcquired(entry, "cloudsql dialer", func(context.Context) error {
+		return d.Close()
+	})
 
 	dsn := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable",
 		dbcfg.User, dbcfg.Password, dbcfg.Name)
@@ -402,6 +517,23 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("new pool: %w", err)
 	}
 	return pool, nil
+}
+
+// embeddedRuntimePath returns the runtime directory for an embedded Postgres
+// instance identified by key. This directory holds the library's extracted
+// binaries and password file.
+func embeddedRuntimePath(key string) string {
+	return filepath.Join(os.TempDir(), "orcacommon-embedded-pg", key)
+}
+
+// embeddedBinariesPath returns the directory where the embedded-postgres
+// library caches extracted binaries.
+func embeddedBinariesPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".embedded-postgres-go", "extracted")
+	}
+	return filepath.Join(home, ".embedded-postgres-go", "extracted")
 }
 
 // Connect returns a pgxpool.Pool for the given database URL.
@@ -423,9 +555,11 @@ func openCloudSQL(ctx context.Context, dbcfg DBConfig) (*pgxpool.Pool, error) {
 // The testcontainer process lifetime is managed by the Docker daemon; callers
 // should invoke pool.Close() when done with the connection.
 func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, error) {
-	var embeddedPG *embeddedpostgres.EmbeddedPostgres
 	var tcContainer testcontainers.Container
-	var effectiveDataPath string // tracks the data path for error-cleanup force-kill
+	var effectiveDataPath string
+	var embeddedPID int
+	var ownsData bool
+	var runtimeDir string
 
 	if IsEmbeddedPostgres(dbURL) {
 		if shuttingDown.Load() {
@@ -452,15 +586,13 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			slog.Info("reusing existing embedded Postgres", "key", key, "dataPath", opts.dataPath, "port", existingPort)
 			// When reusing an existing data directory, the target database may not
 			// exist (embedded-postgres only creates it during initial initdb).
-			// Connect to the system "postgres" database to ensure it exists.
 			if err := ensureDatabaseExists("127.0.0.1", existingPort, opts.dbUser, opts.dbPassword, opts.dbName); err != nil {
 				return nil, fmt.Errorf("ensure database %q exists: %w", opts.dbName, err)
 			}
 
-			// Register the reused instance for graceful shutdown so it is
-			// stopped when the application exits. pg is nil because this
-			// process did not start the instance — stopWithForceKill falls
-			// back to SIGTERM + PID verification for reused instances.
+			// Read the PID for shutdown management.
+			_, _, reusedPID, _ := utils.CheckPIDFile(opts.dataPath)
+
 			embeddedPGLock.Lock()
 			if shuttingDown.Load() {
 				embeddedPGLock.Unlock()
@@ -471,7 +603,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				slog.Warn("replacing existing embedded Postgres entry", "key", key)
 				old = &prev
 			}
-			embeddedInstances[key] = embeddedInstance{pg: nil, dataPath: opts.dataPath, reused: true}
+			embeddedInstances[key] = embeddedInstance{pid: reusedPID, dataPath: opts.dataPath}
 			embeddedPGLock.Unlock()
 			if old != nil {
 				stopWithForceKill(key, *old)
@@ -487,10 +619,20 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 
 			effectiveDataPath = opts.dataPath
 			if effectiveDataPath == "" {
+				ownsData = true
 				effectiveDataPath, err = os.MkdirTemp("", "embedded-pg-*")
 				if err != nil {
 					return nil, fmt.Errorf("create temp data path: %w", err)
 				}
+			}
+
+			// Create the runtime directory for the library's binaries and pwfile.
+			runtimeDir = embeddedRuntimePath(key)
+			if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+				if ownsData {
+					_ = os.RemoveAll(effectiveDataPath)
+				}
+				return nil, fmt.Errorf("create runtime directory: %w", err)
 			}
 
 			cfg := embeddedpostgres.DefaultConfig().
@@ -499,23 +641,63 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				Database(opts.dbName).
 				Port(uint32(port)).
 				Version(embeddedpostgres.V18).
-				DataPath(effectiveDataPath)
+				DataPath(effectiveDataPath).
+				RuntimePath(runtimeDir)
 
 			postgres := embeddedpostgres.NewDatabase(cfg)
 
-			if err := postgres.Start(); err != nil {
-				// Clean up the auto-created temp directory on failure.
-				if opts.dataPath == "" {
+			// Pre-check data path writability to fail fast instead of
+			// hanging in initdb when the path is not writable.
+			if probeFile, probeErr := os.Create(filepath.Join(effectiveDataPath, ".orcacommon-probe")); probeErr != nil {
+				_ = os.RemoveAll(runtimeDir)
+				if ownsData {
 					_ = os.RemoveAll(effectiveDataPath)
 				}
-				return nil, fmt.Errorf("start embedded postgres: %w", err)
+				return nil, fmt.Errorf("unable to init database: data path not writable: %s: %w", effectiveDataPath, probeErr)
+			} else {
+				_ = probeFile.Close()
+				_ = os.Remove(filepath.Join(effectiveDataPath, ".orcacommon-probe"))
 			}
-			embeddedPG = postgres
+
+			// Start embedded Postgres with a timeout to avoid hanging
+			// indefinitely when initdb fails (e.g., unwritable data path).
+			const startTimeout = 30 * time.Second
+			startErrCh := make(chan error, 1)
+			go func() { startErrCh <- postgres.Start() }()
+
+			var startErr error
+			select {
+			case startErr = <-startErrCh:
+			case <-time.After(startTimeout):
+				startErr = fmt.Errorf("embedded Postgres start timed out after %s", startTimeout)
+			}
+
+			if startErr != nil {
+				// Clean up directories we created.
+				_ = os.RemoveAll(runtimeDir)
+				if ownsData {
+					_ = os.RemoveAll(effectiveDataPath)
+				}
+				return nil, fmt.Errorf("start embedded postgres: %w", startErr)
+			}
+
+			// Read the PID from postmaster.pid for shutdown management.
+			_, _, pid, pidErr := utils.CheckPIDFile(effectiveDataPath)
+			if pidErr != nil || pid <= 0 {
+				// Cannot manage shutdown without PID; stop now.
+				_ = postgres.Stop()
+				_ = os.RemoveAll(runtimeDir)
+				if ownsData {
+					_ = os.RemoveAll(effectiveDataPath)
+				}
+				return nil, fmt.Errorf("read postmaster.pid after start: %w", pidErr)
+			}
+			embeddedPID = pid
 
 			embeddedPGLock.Lock()
 			if shuttingDown.Load() {
 				embeddedPGLock.Unlock()
-				stopWithForceKill(key, embeddedInstance{pg: postgres, dataPath: effectiveDataPath})
+				stopWithForceKill(key, embeddedInstance{pid: pid, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir})
 				return nil, fmt.Errorf("embedded Postgres unavailable: shutdown in progress")
 			}
 			var old *embeddedInstance
@@ -523,7 +705,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				slog.Warn("replacing existing embedded Postgres entry", "key", key)
 				old = &prev
 			}
-			embeddedInstances[key] = embeddedInstance{pg: postgres, dataPath: effectiveDataPath}
+			embeddedInstances[key] = embeddedInstance{pid: pid, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir}
 			embeddedPGLock.Unlock()
 			if old != nil {
 				stopWithForceKill(key, *old)
@@ -569,6 +751,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		if err != nil {
 			return nil, fmt.Errorf("start testcontainer: %w", err)
 		}
+		tcContainer = c
 
 		host, err := c.Host(ctx)
 		if err != nil {
@@ -584,14 +767,20 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			dbUser, dbPassword, host, port.Port(), dbName)
 		slog.Info("TestContainer provisioned", "key", key, "host", host, "port", port.Port())
-		tcContainer = c
+
+		// Register TestContainer for cleanup via the registry.
+		if e := poolRegistry.entryFor(key); e != nil {
+			poolRegistry.attachAcquired(e, "testcontainer", func(ctx context.Context) error {
+				return tcContainer.Terminate(ctx)
+			})
+		}
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		if embeddedPG != nil {
+		if embeddedPID > 0 {
 			// Look up the instance we just registered and use the shared
-			// stop-with-force-kill path instead of bare pg.Stop().
+			// stop-with-force-kill path instead of bare process kill.
 			embeddedPGLock.Lock()
 			inst, exists := embeddedInstances[key]
 			if exists {
@@ -601,10 +790,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if exists {
 				stopWithForceKill(key, inst)
 			} else {
-				// Fallback: instance was cleared by concurrent gracefulShutdown
-				// or was never registered. Use stopWithForceKill with the
-				// effectiveDataPath to ensure force-kill fallback.
-				stopWithForceKill(key, embeddedInstance{pg: embeddedPG, dataPath: effectiveDataPath})
+				stopWithForceKill(key, embeddedInstance{pid: embeddedPID, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir})
 			}
 		}
 		if tcContainer != nil {

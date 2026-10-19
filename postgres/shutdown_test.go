@@ -230,7 +230,7 @@ func TestStopWithForceKill_ReusedInstance(t *testing.T) {
 	defer cmd.Process.Kill() //nolint:errcheck
 
 	// Create a reused instance (pg is nil).
-	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+	inst := embeddedInstance{pid: cmd.Process.Pid, dataPath: dataPath}
 
 	start := time.Now()
 	stopWithForceKill("test-reused", inst)
@@ -272,7 +272,7 @@ func TestStopWithForceKill_ForceKillPath(t *testing.T) {
 	stopTimeout = 2 * time.Second
 	defer func() { stopTimeout = origTimeout }()
 
-	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+	inst := embeddedInstance{pid: cmd.Process.Pid, dataPath: dataPath}
 	start := time.Now()
 	stopWithForceKill("test-forcekill", inst)
 	elapsed := time.Since(start)

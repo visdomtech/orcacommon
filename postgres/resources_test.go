@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"cloud.google.com/go/cloudsqlconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/puddle/v2"
+	"github.com/visdomtech/orcacommon/utils"
 )
 
 // attachTestResource records a resource under an existing entry, standing in for
@@ -254,4 +256,51 @@ func assertGone(t *testing.T, path string) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("%s still exists (stat error: %v)", filepath.Base(path), err)
 	}
+}
+
+// lazyPoolFor creates a minimal registry entry with a real pgxpool.Pool for a
+// key, used by tests that attach resources without opening a real database.
+func lazyPoolFor(t *testing.T, key string) *pgxpool.Pool {
+	t.Helper()
+	entry := poolRegistry.newEntry(key)
+	pool, err := pgxpool.New(context.Background(), "postgres://u:p@127.0.0.1:1/d?connect_timeout=1")
+	if err != nil {
+		t.Fatalf("lazyPoolFor: %v", err)
+	}
+	entry.mu.Lock()
+	entry.pool = pool
+	entry.mu.Unlock()
+	return pool
+}
+
+// deadPID returns a process ID that is not currently in use.
+func deadPID(t *testing.T) int {
+	t.Helper()
+	for pid := 99999; pid > 1000; pid-- {
+		if !utils.IsProcessAlive(pid) {
+			return pid
+		}
+	}
+	t.Fatal("could not find a dead PID")
+	return 0
+}
+
+// postmasterPIDFile writes a postmaster.pid file at dataPath with the given
+// PID and port, returning an embeddedInstance suitable for testing.
+func postmasterPIDFile(t *testing.T, dataPath string, pid, port int) embeddedInstance {
+	t.Helper()
+	content := strconv.Itoa(pid) + "\n" + dataPath + "\n1234567890\n" + strconv.Itoa(port) + "\n/tmp\n"
+	if err := os.WriteFile(filepath.Join(dataPath, "postmaster.pid"), []byte(content), 0644); err != nil {
+		t.Fatalf("write postmaster.pid: %v", err)
+	}
+	return embeddedInstance{pid: pid, dataPath: dataPath}
+}
+
+// registeredInstance returns the embedded instance registered under key.
+func registeredInstance(t *testing.T, key string) (embeddedInstance, bool) {
+	t.Helper()
+	embeddedPGLock.Lock()
+	defer embeddedPGLock.Unlock()
+	inst, ok := embeddedInstances[key]
+	return inst, ok
 }

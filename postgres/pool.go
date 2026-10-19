@@ -42,16 +42,19 @@ var poolRegistry poolRegistryType
 
 // poolRegistryType tracks keyed database pools and their acquired resources.
 type poolRegistryType struct {
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	entries map[string]*registryEntry
 }
 
 // registryEntry holds one keyed pool and the resources acquired during its
-// creation (Cloud SQL dialers, test containers, etc.).
+// creation (Cloud SQL dialers, test containers, etc.). The done channel is
+// closed once the initial creation attempt (open pool + run migrations) finishes,
+// allowing concurrent callers to wait rather than race.
 type registryEntry struct {
 	mu        sync.Mutex
 	pool      *pgxpool.Pool
 	resources []acquiredResource
+	done      chan struct{} // closed when initial creation completes (success or failure)
 }
 
 // acquiredResource is a named cleanup callback attached to a registry entry.
@@ -61,8 +64,8 @@ type acquiredResource struct {
 }
 
 func (r *poolRegistryType) entryFor(key string) *registryEntry {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.entries[key]
 }
 
@@ -72,7 +75,7 @@ func (r *poolRegistryType) newEntry(key string) *registryEntry {
 	if r.entries == nil {
 		r.entries = make(map[string]*registryEntry)
 	}
-	e := &registryEntry{}
+	e := &registryEntry{done: make(chan struct{})}
 	r.entries[key] = e
 	return e
 }
@@ -191,32 +194,59 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		if pool != nil {
 			return pool, nil
 		}
+		// Pool is nil: creation may be in progress or failed. Wait for it.
+		<-e.done
+		e.mu.Lock()
+		pool = e.pool
+		e.mu.Unlock()
+		if pool != nil {
+			return pool, nil
+		}
+		// Creation failed; fall through to slow path.
 	}
 
-	// Slow path: create pool under lock.
+	// Slow path: create pool.
+	// Use the entry's done channel to coordinate with concurrent Open/Close
+	// callers. The creating goroutine closes done when finished (success or
+	// failure), so others can wait rather than race.
 	poolRegistry.mu.Lock()
 	e := poolRegistry.entries[key]
 	if e != nil {
 		e.mu.Lock()
 		pool := e.pool
+		done := e.done
 		e.mu.Unlock()
 		if pool != nil {
 			poolRegistry.mu.Unlock()
 			return pool, nil
 		}
-		// Entry exists but pool is nil (previous creation failed or is in
-		// progress). Reuse the entry to avoid leaking resources.
-	} else {
-		e = &registryEntry{}
-		if poolRegistry.entries == nil {
-			poolRegistry.entries = make(map[string]*registryEntry)
+		if done != nil {
+			poolRegistry.mu.Unlock()
+			// Another goroutine is creating; wait then re-enter fast path.
+			<-done
+			e.mu.Lock()
+			pool = e.pool
+			e.mu.Unlock()
+			if pool != nil {
+				return pool, nil
+			}
+			// Creation failed; fall through to create a new entry.
+			poolRegistry.mu.Lock()
 		}
-		poolRegistry.entries[key] = e
 	}
+	// Create (or replace) the entry with a fresh done channel.
+	if poolRegistry.entries == nil {
+		poolRegistry.entries = make(map[string]*registryEntry)
+	}
+	e = &registryEntry{done: make(chan struct{})}
+	poolRegistry.entries[key] = e
 	poolRegistry.mu.Unlock()
 
+	// Ensure done is closed on every exit path so waiters unblock.
 	var pool *pgxpool.Pool
 	var err error
+	defer close(e.done)
+
 	if dbcfg.CloudSQLInstance != "" {
 		pool, err = openCloudSQL(ctx, dbcfg, e)
 	} else {
@@ -228,16 +258,18 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		return nil, err
 	}
 
-	e.mu.Lock()
-	e.pool = pool
-	e.mu.Unlock()
-
 	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
 		pool.Close()
 		e.releaseAll(ctx)
 		poolRegistry.remove(key)
 		return nil, err
 	}
+
+	// Store pool only after successful migrations. This ensures waiters
+	// never see a pool that is about to be closed due to migration failure.
+	e.mu.Lock()
+	e.pool = pool
+	e.mu.Unlock()
 	return pool, nil
 }
 
@@ -271,6 +303,11 @@ func ClosePoolWithKey(ctx context.Context, key string) error {
 
 	// Close pool first so release callbacks observe puddle.ErrClosedPool.
 	if entry != nil {
+		// Wait for in-flight creation to finish so we don't miss a pool
+		// that hasn't been stored yet.
+		if entry.done != nil {
+			<-entry.done
+		}
 		entry.mu.Lock()
 		pool := entry.pool
 		entry.pool = nil
@@ -316,6 +353,10 @@ func gracefulShutdown() {
 	poolRegistry.mu.Unlock()
 
 	for _, entry := range entries {
+		// Wait for in-flight creation to finish.
+		if entry.done != nil {
+			<-entry.done
+		}
 		entry.mu.Lock()
 		pool := entry.pool
 		entry.pool = nil
@@ -434,6 +475,7 @@ forceKill:
 			slog.Warn("could not remove auto-created data directory", "key", key, "path", inst.dataPath, "error", err)
 		}
 	}
+	slog.Debug("stopWithForceKill complete", "key", key, "elapsed", time.Since(start))
 }
 
 // snapshotAndClearEmbeddedInstances atomically copies the embedded instance
@@ -674,6 +716,9 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			case startErr = <-startErrCh:
 			case <-time.After(startTimeout):
 				startErr = fmt.Errorf("embedded Postgres start timed out after %s", startTimeout)
+				// Drain the channel so the Start goroutine can exit when it
+				// eventually returns, preventing a goroutine leak.
+				go func() { <-startErrCh }()
 			}
 
 			if startErr != nil {

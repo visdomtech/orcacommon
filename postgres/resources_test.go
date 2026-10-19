@@ -20,7 +20,7 @@ import (
 )
 
 // attachTestResource records a resource under an existing entry, standing in for
-// the Cloud SQL dialer or TestContainer that connect() would have provisioned.
+// the Cloud SQL dialer or TestContainer that Connect() would have provisioned.
 func attachTestResource(t *testing.T, key, name string, release func(context.Context) error) {
 	t.Helper()
 	e := poolRegistry.entryFor(key)
@@ -270,6 +270,7 @@ func lazyPoolFor(t *testing.T, key string) *pgxpool.Pool {
 	entry.mu.Lock()
 	entry.pool = pool
 	entry.mu.Unlock()
+	close(entry.done)
 	return pool
 }
 

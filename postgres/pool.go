@@ -123,6 +123,49 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 	return pool, err
 }
 
+// ClosePoolWithKey releases one keyed database pool created by OpenPoolWithKey.
+// It closes the cached pgxpool, removes it from the keyed-pool cache, and stops
+// the embedded Postgres instance registered under the same key. The pool is
+// closed before the embedded instance is stopped, matching graceful shutdown
+// ordering. An empty key returns an error. An unknown key is a silent no-op
+// and returns nil. After a successful close, OpenPoolWithKey with the same key
+// creates a fresh pool.
+//
+// Closing the "__shared__" pool (OpenPool) is allowed but drops the
+// process-wide singleton; no ClosePool() wrapper is provided.
+func ClosePoolWithKey(key string) error {
+	if key == "" {
+		return errors.New("non-empty key is required")
+	}
+
+	keyedPoolLock.Lock()
+	pool, hadPool := keyedPools[key]
+	delete(keyedPools, key)
+	keyedPoolLock.Unlock()
+
+	embeddedPGLock.Lock()
+	inst, hadInstance := embeddedInstances[key]
+	delete(embeddedInstances, key)
+	embeddedPGLock.Unlock()
+
+	if !hadPool && !hadInstance {
+		slog.Debug("no database pool or embedded Postgres registered for key", "key", key)
+		return nil
+	}
+
+	// Close the pool before stopping the database server, and never hold either
+	// lock while doing so: stopWithForceKill can block up to stopTimeout.
+	if hadPool {
+		pool.Close()
+	}
+	if hadInstance {
+		stopWithForceKill(key, inst)
+	}
+
+	slog.Info("closed keyed database pool", "key", key, "hadPool", hadPool, "stoppedEmbeddedPostgres", hadInstance)
+	return nil
+}
+
 func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
 	var pool *pgxpool.Pool
 	var err error

@@ -41,6 +41,14 @@ Database connection parameters with `env` struct tags (prefix `DB_`). `ResolveUR
 ### `OpenPool` / `OpenPoolWithKey` (`pool.go`)
 Process-wide singleton pool (or keyed pools for multi-database setups). Double-checked locking on a global map. Pool creation flow via `createPool`: connect → migrate → cache on success. On migration failure, the pool is closed and the error propagated — the pool is **not** cached (all-or-nothing). Uses pgxpool defaults (MaxConns = `runtime.NumCPU()`); consumers needing custom pool sizing should configure `pgxpool.Config` directly.
 
+### `ClosePoolWithKey` (`pool.go`)
+Runtime teardown for one keyed pool created by `OpenPoolWithKey` — no process exit required.
+- **Empty key** → error `non-empty key is required` (mirrors `OpenPoolWithKey`).
+- **Unknown key** → silent no-op, returns `nil` (idempotent, safe in `defer`).
+- **Known key** → the cached `pgxpool` is removed from `keyedPools` and closed, then the embedded Postgres entry registered under the same key by `Connect` is removed from `embeddedInstances` and stopped through the shared `stopWithForceKill` path (SIGTERM → `pg.Stop()` → SIGKILL fallback → stale `postmaster.pid` cleanup).
+- **Ordering** → the pool is closed *before* the embedded instance is stopped, matching graceful-shutdown ordering. Both map deletions happen under `keyedPoolLock` / `embeddedPGLock` (never nested), and the slow work runs outside the locks — so a concurrent `OpenPoolWithKey` may register a fresh pool/instance under the same key while the old one is still being stopped; the old snapshot is stopped exactly once.
+- Re-opening the same key afterwards builds a fresh pool. Closing the `"__shared__"` pool (`OpenPool`) is allowed but drops the process-wide singleton; there is no `ClosePool()` wrapper. TestContainer (`postgres:tc:`) containers are **not** terminated.
+
 ### `Connect` (`pool.go`)
 Low-level connection function. Detects three special URL prefixes:
 - **`postgres:embedded:`** — starts an embedded Postgres instance. Query params: `?datapath=`, `?user=`, `?password=`, `?name=`. Reuses existing instances by checking PID file liveness + port. When reusing, `ensureDatabaseExists` creates the target database if absent (embedded-postgres only runs `createdb` during initial `initdb`).
@@ -68,9 +76,14 @@ On SIGTERM/SIGINT:
    - After stop, the postmaster.pid PID is verified via `CheckPIDFile`.
    - If the process is still alive, `utils.KillEmbeddedPG(pid)` sends SIGKILL.
    - After confirmed kill, the stale `postmaster.pid` is removed.
-   - `stopWithForceKill` is reused by Connect() for instance replacement and error-cleanup paths.
+   - `stopWithForceKill` is reused by Connect() for instance replacement and error-cleanup paths, and by `ClosePoolWithKey` for per-key teardown.
 4. Closes `shutdownDone` channel to unblock `WaitForGracefulShutdown()`.
 5. Logs shutdown duration on completion.
+
+Per-key teardown (`ClosePoolWithKey`) runs alongside process-wide shutdown: a
+service can release one keyed pool and its embedded Postgres at runtime, and
+whatever is left when the signal arrives is handled by `gracefulShutdown` (an
+already-closed key is a no-op for `ClosePoolWithKey`).
 
 ## Configuration
 

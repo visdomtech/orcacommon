@@ -692,6 +692,17 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 
 			postgres := embeddedpostgres.NewDatabase(cfg)
 
+			// Ensure the data path directory exists before probing writability.
+			// When the caller supplies a data path, it may not exist yet
+			// (first use). The embedded-postgres library would create it
+			// during initdb, but our probe runs before that.
+			if !ownsData {
+				if mkErr := os.MkdirAll(effectiveDataPath, 0o700); mkErr != nil {
+					_ = os.RemoveAll(runtimeDir)
+					return nil, fmt.Errorf("create data path directory: %w", mkErr)
+				}
+			}
+
 			// Pre-check data path writability to fail fast instead of
 			// hanging in initdb when the path is not writable.
 			if probeFile, probeErr := os.Create(filepath.Join(effectiveDataPath, ".orcacommon-probe")); probeErr != nil {

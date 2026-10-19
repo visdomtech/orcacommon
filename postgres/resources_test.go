@@ -229,11 +229,12 @@ func TestFailedEmbeddedStartReleasesWhatItCreated(t *testing.T) {
 		_ = ClosePoolWithKey(t.Context(), key)
 		t.Fatal("expected initdb to fail against an unwritable parent directory")
 	}
-	// Pin the branch: the provision has to have failed inside initdb, which is
-	// after the password file was written, rather than in an earlier step that
-	// would leave nothing to clean up.
-	if !strings.Contains(err.Error(), "unable to init database") {
-		t.Fatalf("expected an initdb failure, got: %v", err)
+	// The failure can occur at directory creation (MkdirAll) or at the
+	// writability probe, depending on whether the parent allows mkdir.
+	// Both indicate the data path is unusable.
+	if !strings.Contains(err.Error(), "unable to init database") &&
+		!strings.Contains(err.Error(), "create data path directory") {
+		t.Fatalf("expected a data path failure, got: %v", err)
 	}
 
 	// Start() recreates the runtime directory before it fails, so this is the

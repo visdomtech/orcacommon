@@ -161,66 +161,6 @@ func TestConnect_RefusesDuringShutdown(t *testing.T) {
 	}
 }
 
-// TestStopWithForceKill_SIGTERMInitiated verifies that stopWithForceKill
-// initiates Postgres shutdown via direct SIGTERM, allowing pg.Stop() to
-// return quickly. Uses a real embedded Postgres instance.
-func TestStopWithForceKill_SIGTERMInitiated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping embedded postgres test in short mode")
-	}
-
-	// Reduce stopTimeout so the test does not take too long if something hangs.
-	origTimeout := stopTimeout
-	stopTimeout = 10 * time.Second
-	defer func() { stopTimeout = origTimeout }()
-
-	ctx := t.Context()
-	pool, err := Connect(ctx, "postgres:embedded:", "test-sigterm-stop")
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		t.Fatalf("ping: %v", err)
-	}
-
-	// Get the embedded instance to stop via stopWithForceKill.
-	embeddedPGLock.Lock()
-	inst, ok := embeddedInstances["test-sigterm-stop"]
-	if ok {
-		delete(embeddedInstances, "test-sigterm-stop")
-	}
-	embeddedPGLock.Unlock()
-
-	if !ok {
-		pool.Close()
-		t.Fatal("embedded instance not found")
-	}
-
-	pool.Close()
-
-	// stopWithForceKill should send SIGTERM first, then pg.Stop() should
-	// complete quickly (well under stopTimeout).
-	start := time.Now()
-	stopWithForceKill("test-sigterm-stop", inst)
-	elapsed := time.Since(start)
-
-	// Verify the Postgres process is no longer alive.
-	_, alive, pid, _ := checkPIDFileSafe(inst.dataPath)
-	if alive && pid > 0 {
-		// Force-kill as cleanup.
-		proc, _ := os.FindProcess(pid)
-		_ = proc.Signal(syscall.SIGKILL)
-		t.Fatalf("Postgres process (pid=%d) still alive after stopWithForceKill", pid)
-	}
-
-	t.Logf("stopWithForceKill completed in %v", elapsed)
-	// SIGTERM + pg.Stop() should complete well under the 10s timeout.
-	if elapsed > stopTimeout {
-		t.Errorf("stopWithForceKill took %v, expected < %v", elapsed, stopTimeout)
-	}
-}
-
 // TestStopWithForceKill_ReusedInstance verifies that stopWithForceKill
 // correctly handles reused instances (pg == nil) by sending SIGTERM
 // and verifying the process exits. No pg.Stop() call is made.
@@ -230,7 +170,7 @@ func TestStopWithForceKill_ReusedInstance(t *testing.T) {
 	defer cmd.Process.Kill() //nolint:errcheck
 
 	// Create a reused instance (pg is nil).
-	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+	inst := embeddedInstance{pid: cmd.Process.Pid, dataPath: dataPath}
 
 	start := time.Now()
 	stopWithForceKill("test-reused", inst)
@@ -272,7 +212,7 @@ func TestStopWithForceKill_ForceKillPath(t *testing.T) {
 	stopTimeout = 2 * time.Second
 	defer func() { stopTimeout = origTimeout }()
 
-	inst := embeddedInstance{pg: nil, dataPath: dataPath, reused: true}
+	inst := embeddedInstance{pid: cmd.Process.Pid, dataPath: dataPath}
 	start := time.Now()
 	stopWithForceKill("test-forcekill", inst)
 	elapsed := time.Since(start)

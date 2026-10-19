@@ -315,7 +315,7 @@ func gracefulShutdown() {
 	clear(poolRegistry.entries)
 	poolRegistry.mu.Unlock()
 
-	for key, entry := range entries {
+	for _, entry := range entries {
 		entry.mu.Lock()
 		pool := entry.pool
 		entry.pool = nil
@@ -324,7 +324,6 @@ func gracefulShutdown() {
 			pool.Close()
 		}
 		entry.releaseAll(context.Background())
-		_ = key
 	}
 	slog.Info("closed all database connection pools", "elapsed", time.Since(shutdownStart))
 

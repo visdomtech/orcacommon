@@ -107,18 +107,24 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 	pool, found := keyedPools[key]
 	keyedPoolLock.RUnlock()
 
+	var err error
 	if found {
-		return pool, nil
+		goto runMigration
 	}
+
 	keyedPoolLock.Lock()
 	defer keyedPoolLock.Unlock()
 	if pool, found = keyedPools[key]; found {
-		return pool, nil
+		goto runMigration
 	}
 
-	var err error
 	if pool, err = createPool(ctx, dbcfg, migrator, key); err == nil {
 		keyedPools[key] = pool
+	}
+runMigration:
+	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+		pool.Close()
+		return nil, err
 	}
 	return pool, err
 }
@@ -175,10 +181,6 @@ func createPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key str
 		pool, err = Connect(ctx, dbcfg.ResolveURL(), key)
 	}
 	if err != nil {
-		return nil, err
-	}
-	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-		pool.Close()
 		return nil, err
 	}
 	return pool, nil

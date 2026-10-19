@@ -204,12 +204,15 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 			poolRegistry.mu.Unlock()
 			return pool, nil
 		}
+		// Entry exists but pool is nil (previous creation failed or is in
+		// progress). Reuse the entry to avoid leaking resources.
+	} else {
+		e = &registryEntry{}
+		if poolRegistry.entries == nil {
+			poolRegistry.entries = make(map[string]*registryEntry)
+		}
+		poolRegistry.entries[key] = e
 	}
-	e = &registryEntry{}
-	if poolRegistry.entries == nil {
-		poolRegistry.entries = make(map[string]*registryEntry)
-	}
-	poolRegistry.entries[key] = e
 	poolRegistry.mu.Unlock()
 
 	var pool *pgxpool.Pool
@@ -220,6 +223,7 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		pool, err = Connect(ctx, dbcfg.ResolveURL(), key)
 	}
 	if err != nil {
+		e.releaseAll(ctx)
 		poolRegistry.remove(key)
 		return nil, err
 	}
@@ -230,6 +234,7 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 
 	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
 		pool.Close()
+		e.releaseAll(ctx)
 		poolRegistry.remove(key)
 		return nil, err
 	}

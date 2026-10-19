@@ -422,6 +422,16 @@ func stopWithForceKill(key string, inst embeddedInstance) {
 				slog.Info("embedded Postgres stopped", "key", key, "elapsed", time.Since(start))
 				processConfirmedDead = true
 			}
+			// Attempt non-blocking waitpid to reap zombie processes.
+			// Signal(0) returns nil for zombies (exited but not reaped),
+			// so IsProcessAlive may report them as alive. Wait4 with WNOHANG
+			// reaps the zombie if we are the parent process.
+			if !processConfirmedDead && inst.pid > 0 {
+				if wpid, _ := syscall.Wait4(inst.pid, nil, syscall.WNOHANG, nil); wpid == inst.pid {
+					slog.Info("embedded Postgres stopped (reaped zombie)", "key", key, "elapsed", time.Since(start))
+					processConfirmedDead = true
+				}
+			}
 			// Also check PID file as fallback (e.g., reused instances).
 			if !processConfirmedDead && inst.dataPath != "" {
 				_, alive, _, _ := utils.CheckPIDFile(inst.dataPath)

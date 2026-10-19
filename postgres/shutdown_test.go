@@ -170,9 +170,8 @@ func TestStopWithForceKill_SIGTERMInitiated(t *testing.T) {
 	}
 
 	// Reduce stopTimeout so the test does not take too long if something hangs.
-	// 30s accommodates CI runners where Postgres shutdown can be slow.
 	origTimeout := stopTimeout
-	stopTimeout = 30 * time.Second
+	stopTimeout = 10 * time.Second
 	defer func() { stopTimeout = origTimeout }()
 
 	ctx := t.Context()

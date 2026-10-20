@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/visdomtech/orcacommon/compare/v0.9.0...v0.10.0) (2026-10-20)
+
+
+### Features
+
+* **postgres:** run migrations on every OpenPoolWithKey return path ([#29](https://github.com/visdomtech/orcacommon/issues/29)) ([518f9ee](https://github.com/visdomtech/orcacommon/commit/518f9ee07fd528605c27d19f1dfe80abc67a7b53))
+
 ## [0.9.0](https://github.com/visdomtech/orcacommon/compare/v0.8.0...v0.9.0) (2026-10-19)
 
 

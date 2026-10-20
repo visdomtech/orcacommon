@@ -181,6 +181,10 @@ func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool
 // OpenPoolWithKey returns a keyed pgxpool connection. If the pool is not found,
 // it is created with the given key and saved in the registry. The cached pool
 // will be returned directly on subsequent calls with the same key.
+//
+// Migrations are executed on every call, including when returning a cached
+// pool. Since Atlas migrations are idempotent (checking for pending migrations
+// first), this is safe and ensures the schema is always up to date.
 func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
 	if key == "" {
 		return nil, errors.New("non-empty key is required")

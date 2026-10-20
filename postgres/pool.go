@@ -192,6 +192,9 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		pool := e.pool
 		e.mu.Unlock()
 		if pool != nil {
+			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+				return nil, err
+			}
 			return pool, nil
 		}
 		// Pool is nil: creation may be in progress or failed. Wait for it.
@@ -200,6 +203,9 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		pool = e.pool
 		e.mu.Unlock()
 		if pool != nil {
+			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+				return nil, err
+			}
 			return pool, nil
 		}
 		// Creation failed; fall through to slow path.
@@ -218,6 +224,9 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		e.mu.Unlock()
 		if pool != nil {
 			poolRegistry.mu.Unlock()
+			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+				return nil, err
+			}
 			return pool, nil
 		}
 		if done != nil {
@@ -228,6 +237,9 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 			pool = e.pool
 			e.mu.Unlock()
 			if pool != nil {
+				if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+					return nil, err
+				}
 				return pool, nil
 			}
 			// Creation failed; fall through to create a new entry.

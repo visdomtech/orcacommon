@@ -121,6 +121,10 @@ var (
 	// before force-killing the process. Exported as a var for test overrides.
 	stopTimeout = 15 * time.Second
 
+	// startTimeout is the maximum time allowed for embedded Postgres to
+	// start (including initdb). Exported as a var for test overrides.
+	startTimeout = 30 * time.Second
+
 	// shutdownDone is closed when gracefulShutdown completes, allowing
 	// consuming applications to block in WaitForGracefulShutdown until
 	// all cleanup (pool closing, embedded Postgres stop) has finished.
@@ -739,7 +743,6 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 
 			// Start embedded Postgres with a timeout to avoid hanging
 			// indefinitely when initdb fails (e.g., unwritable data path).
-			const startTimeout = 30 * time.Second
 			startErrCh := make(chan error, 1)
 			go func() { startErrCh <- postgres.Start() }()
 

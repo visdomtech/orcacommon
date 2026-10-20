@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -304,6 +305,11 @@ func TestOpenPoolWithKey_RunsMigrationsOnCachedPool(t *testing.T) {
 //
 // All four operations must succeed without error.
 func TestOpenPoolWithKey_SequentialKeyReuseSameDataPath(t *testing.T) {
+	// Extend start timeout for slow environments (initdb on temp dirs).
+	orig := startTimeout
+	startTimeout = 120 * time.Second
+	defer func() { startTimeout = orig }()
+
 	ctx := context.Background()
 	dataPath := t.TempDir()
 

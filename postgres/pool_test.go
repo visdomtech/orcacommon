@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -290,6 +291,58 @@ func TestOpenPoolWithKey_RunsMigrationsOnCachedPool(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Fatalf("expected 2 migration calls (creation + cached), got %d", callCount)
+	}
+}
+
+// TestOpenPoolWithKey_SequentialKeyReuseSameDataPath verifies that two
+// different pool keys can sequentially open and close embedded Postgres
+// pools using the same data path. The sequence is:
+//
+//  1. OpenPoolWithKey(k1) with data path p1
+//  2. ClosePoolWithKey(k1) — stops pool and embedded PG
+//  3. OpenPoolWithKey(k2) with the same data path p1
+//  4. ClosePoolWithKey(k2)
+//
+// All four operations must succeed without error.
+func TestOpenPoolWithKey_SequentialKeyReuseSameDataPath(t *testing.T) {
+	// Extend start timeout for slow environments (initdb on temp dirs).
+	orig := startTimeout
+	startTimeout = 120 * time.Second
+	defer func() { startTimeout = orig }()
+
+	ctx := context.Background()
+	dataPath := t.TempDir()
+
+	dbcfg := DBConfig{
+		DatabaseURLTemplate: "postgres:embedded:?datapath=" + url.QueryEscape(dataPath),
+	}
+
+	// Step 1: Open pool with key k1.
+	pool1, err := OpenPoolWithKey(ctx, dbcfg, nil, "k1")
+	if err != nil {
+		t.Fatalf("OpenPoolWithKey k1: %v", err)
+	}
+	if err := pool1.Ping(ctx); err != nil {
+		t.Fatalf("ping k1: %v", err)
+	}
+
+	// Step 2: Close pool with key k1.
+	if err := ClosePoolWithKey(ctx, "k1"); err != nil {
+		t.Fatalf("ClosePoolWithKey k1: %v", err)
+	}
+
+	// Step 3: Open pool with key k2 using the same data path.
+	pool2, err := OpenPoolWithKey(ctx, dbcfg, nil, "k2")
+	if err != nil {
+		t.Fatalf("OpenPoolWithKey k2 (same data path): %v", err)
+	}
+	if err := pool2.Ping(ctx); err != nil {
+		t.Fatalf("ping k2: %v", err)
+	}
+
+	// Step 4: Close pool with key k2.
+	if err := ClosePoolWithKey(ctx, "k2"); err != nil {
+		t.Fatalf("ClosePoolWithKey k2: %v", err)
 	}
 }
 

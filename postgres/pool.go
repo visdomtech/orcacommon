@@ -186,6 +186,21 @@ func OpenPool(ctx context.Context, dbcfg DBConfig, migrator *Migrator) (*pgxpool
 // pool. Since Atlas migrations are idempotent (checking for pending migrations
 // first), this is safe and ensures the schema is always up to date.
 func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, key string) (*pgxpool.Pool, error) {
+	pool, err := resolvePool(ctx, dbcfg, key)
+	if err != nil {
+		return nil, err
+	}
+	if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+		return nil, err
+	}
+	return pool, nil
+}
+
+// resolvePool returns a keyed pgxpool connection from the registry, creating
+// one if necessary. It handles pool caching, concurrent creation coordination,
+// and Cloud SQL / standard connection provisioning. It does NOT run migrations;
+// the caller (OpenPoolWithKey) is responsible for that.
+func resolvePool(ctx context.Context, dbcfg DBConfig, key string) (*pgxpool.Pool, error) {
 	if key == "" {
 		return nil, errors.New("non-empty key is required")
 	}
@@ -196,9 +211,6 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		pool := e.pool
 		e.mu.Unlock()
 		if pool != nil {
-			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-				return nil, err
-			}
 			return pool, nil
 		}
 		// Pool is nil: creation may be in progress or failed. Wait for it.
@@ -207,9 +219,6 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		pool = e.pool
 		e.mu.Unlock()
 		if pool != nil {
-			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-				return nil, err
-			}
 			return pool, nil
 		}
 		// Creation failed; fall through to slow path.
@@ -228,9 +237,6 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		e.mu.Unlock()
 		if pool != nil {
 			poolRegistry.mu.Unlock()
-			if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-				return nil, err
-			}
 			return pool, nil
 		}
 		if done != nil {
@@ -241,9 +247,6 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 			pool = e.pool
 			e.mu.Unlock()
 			if pool != nil {
-				if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-					return nil, err
-				}
 				return pool, nil
 			}
 			// Creation failed; fall through to create a new entry.
@@ -274,15 +277,7 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 		return nil, err
 	}
 
-	if err = runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
-		pool.Close()
-		e.releaseAll(ctx)
-		poolRegistry.remove(key)
-		return nil, err
-	}
-
-	// Store pool only after successful migrations. This ensures waiters
-	// never see a pool that is about to be closed due to migration failure.
+	// Store the pool so concurrent waiters can use it.
 	e.mu.Lock()
 	e.pool = pool
 	e.mu.Unlock()

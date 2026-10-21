@@ -680,6 +680,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				stopWithForceKill(key, *old)
 			}
 
+			slog.Info("connect to existing embedded postgres", "user", opts.dbUser, "port", existingPort, "dbName", opts.dbName)
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
@@ -715,6 +716,8 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				DataPath(effectiveDataPath).
 				RuntimePath(runtimeDir)
 
+			slog.Info("starting new embedded postgres with options", "DataPath", effectiveDataPath, "RuntimePath", runtimeDir,
+				"user", opts.dbUser, "dbName", opts.dbName, "port", port)
 			postgres := embeddedpostgres.NewDatabase(cfg)
 
 			// Ensure the data path directory exists before probing writability.

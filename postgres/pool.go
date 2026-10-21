@@ -137,10 +137,11 @@ var (
 )
 
 type embeddedInstance struct {
-	pid          int    // Postgres process PID; 0 means no process to stop
-	dataPath     string // Postgres data directory (for PID file verification and cleanup)
-	ownsDataPath bool   // true when Connect auto-created the data directory (cleaned up on stop)
-	runtimePath  string // library runtime directory containing binaries and pwfile (cleaned up on stop)
+	pid          int      // Postgres process PID; 0 means no process to stop
+	dataPath     string   // Postgres data directory (for PID file verification and cleanup)
+	ownsDataPath bool     // true when Connect auto-created the data directory (cleaned up on stop)
+	runtimePath  string   // library runtime directory containing binaries and pwfile (cleaned up on stop)
+	logFile      *os.File // server output log file under dataPath (closed on stop; nil for reused instances)
 }
 
 func init() {
@@ -489,6 +490,14 @@ forceKill:
 		removeStalePIDFile(key, pidFile)
 	}
 
+	// Close the server-output log file before removing directories so
+	// that Windows (which cannot delete open files) does not block cleanup.
+	if inst.logFile != nil {
+		if err := inst.logFile.Close(); err != nil {
+			slog.Warn("could not close embedded postgres log file", "key", key, "error", err)
+		}
+	}
+
 	// Clean up directories we created.
 	if inst.runtimePath != "" {
 		if err := os.RemoveAll(inst.runtimePath); err != nil {
@@ -631,6 +640,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	var embeddedPID int
 	var ownsData bool
 	var runtimeDir string
+	var embeddedLogFile *os.File // server-output log file; closed via stopWithForceKill or fallback cleanup
 
 	if IsEmbeddedPostgres(dbURL) {
 		if shuttingDown.Load() {
@@ -680,6 +690,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				stopWithForceKill(key, *old)
 			}
 
+			slog.Info("connect to existing embedded postgres", "user", opts.dbUser, "port", existingPort, "dbName", opts.dbName)
 			dbURL = fmt.Sprintf("postgres://%s:%s@localhost:%d/%s?sslmode=disable",
 				opts.dbUser, opts.dbPassword, existingPort, opts.dbName)
 		} else {
@@ -715,7 +726,8 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				DataPath(effectiveDataPath).
 				RuntimePath(runtimeDir)
 
-			postgres := embeddedpostgres.NewDatabase(cfg)
+			slog.Info("starting new embedded postgres with options", "DataPath", effectiveDataPath, "RuntimePath", runtimeDir,
+				"user", opts.dbUser, "dbName", opts.dbName, "port", port)
 
 			// Ensure the data path directory exists before probing writability.
 			// When the caller supplies a data path, it may not exist yet
@@ -741,6 +753,22 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				_ = os.Remove(filepath.Join(effectiveDataPath, ".orcacommon-probe"))
 			}
 
+			// Direct all embedded Postgres server output to a log file
+			// under the data path so it survives for debugging.
+			logFilePath := filepath.Join(effectiveDataPath, "embedded-postgres.log")
+			logFile, logErr := os.Create(logFilePath)
+			if logErr != nil {
+				_ = os.RemoveAll(runtimeDir)
+				if ownsData {
+					_ = os.RemoveAll(effectiveDataPath)
+				}
+				return nil, fmt.Errorf("create embedded postgres log file: %w", logErr)
+			}
+			cfg = cfg.Logger(logFile)
+			embeddedLogFile = logFile
+			slog.Debug("embedded postgres server output will be written to", "logFile", logFilePath)
+			postgres := embeddedpostgres.NewDatabase(cfg)
+
 			// Start embedded Postgres with a timeout to avoid hanging
 			// indefinitely when initdb fails (e.g., unwritable data path).
 			startErrCh := make(chan error, 1)
@@ -757,6 +785,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			}
 
 			if startErr != nil {
+				_ = logFile.Close()
 				// Clean up directories we created.
 				_ = os.RemoveAll(runtimeDir)
 				if ownsData {
@@ -770,6 +799,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if pidErr != nil || pid <= 0 {
 				// Cannot manage shutdown without PID; stop now.
 				_ = postgres.Stop()
+				_ = logFile.Close()
 				_ = os.RemoveAll(runtimeDir)
 				if ownsData {
 					_ = os.RemoveAll(effectiveDataPath)
@@ -781,6 +811,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			embeddedPGLock.Lock()
 			if shuttingDown.Load() {
 				embeddedPGLock.Unlock()
+				_ = logFile.Close()
 				stopWithForceKill(key, embeddedInstance{pid: pid, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir})
 				return nil, fmt.Errorf("embedded Postgres unavailable: shutdown in progress")
 			}
@@ -789,7 +820,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				slog.Warn("replacing existing embedded Postgres entry", "key", key)
 				old = &prev
 			}
-			embeddedInstances[key] = embeddedInstance{pid: pid, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir}
+			embeddedInstances[key] = embeddedInstance{pid: pid, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir, logFile: logFile}
 			embeddedPGLock.Unlock()
 			if old != nil {
 				stopWithForceKill(key, *old)
@@ -874,7 +905,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if exists {
 				stopWithForceKill(key, inst)
 			} else {
-				stopWithForceKill(key, embeddedInstance{pid: embeddedPID, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir})
+				stopWithForceKill(key, embeddedInstance{pid: embeddedPID, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir, logFile: embeddedLogFile})
 			}
 		}
 		if tcContainer != nil {

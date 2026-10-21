@@ -490,6 +490,14 @@ forceKill:
 		removeStalePIDFile(key, pidFile)
 	}
 
+	// Close the server-output log file before removing directories so
+	// that Windows (which cannot delete open files) does not block cleanup.
+	if inst.logFile != nil {
+		if err := inst.logFile.Close(); err != nil {
+			slog.Warn("could not close embedded postgres log file", "key", key, "error", err)
+		}
+	}
+
 	// Clean up directories we created.
 	if inst.runtimePath != "" {
 		if err := os.RemoveAll(inst.runtimePath); err != nil {
@@ -499,11 +507,6 @@ forceKill:
 	if inst.ownsDataPath && inst.dataPath != "" {
 		if err := os.RemoveAll(inst.dataPath); err != nil {
 			slog.Warn("could not remove auto-created data directory", "key", key, "path", inst.dataPath, "error", err)
-		}
-	}
-	if inst.logFile != nil {
-		if err := inst.logFile.Close(); err != nil {
-			slog.Warn("could not close embedded postgres log file", "key", key, "error", err)
 		}
 	}
 	slog.Debug("stopWithForceKill complete", "key", key, "elapsed", time.Since(start))
@@ -637,6 +640,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 	var embeddedPID int
 	var ownsData bool
 	var runtimeDir string
+	var embeddedLogFile *os.File // server-output log file; closed via stopWithForceKill or fallback cleanup
 
 	if IsEmbeddedPostgres(dbURL) {
 		if shuttingDown.Load() {
@@ -761,6 +765,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 				return nil, fmt.Errorf("create embedded postgres log file: %w", logErr)
 			}
 			cfg = cfg.Logger(logFile)
+			embeddedLogFile = logFile
 			slog.Debug("embedded postgres server output will be written to", "logFile", logFilePath)
 			postgres := embeddedpostgres.NewDatabase(cfg)
 
@@ -900,7 +905,7 @@ func Connect(ctx context.Context, dbURL string, key string) (*pgxpool.Pool, erro
 			if exists {
 				stopWithForceKill(key, inst)
 			} else {
-				stopWithForceKill(key, embeddedInstance{pid: embeddedPID, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir})
+				stopWithForceKill(key, embeddedInstance{pid: embeddedPID, dataPath: effectiveDataPath, ownsDataPath: ownsData, runtimePath: runtimeDir, logFile: embeddedLogFile})
 			}
 		}
 		if tcContainer != nil {

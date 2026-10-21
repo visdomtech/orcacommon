@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.0](https://github.com/visdomtech/orcacommon/compare/v0.10.0...v0.11.0) (2026-10-21)
+
+
+### Features
+
+* **postgres:** redirect embedded postgres server output to log file ([#33](https://github.com/visdomtech/orcacommon/issues/33)) ([cb8bcc5](https://github.com/visdomtech/orcacommon/commit/cb8bcc5dfcddf842ce90db63b776f314f2e71830))
+
+
+### Bug Fixes
+
+* **postgres:** make embedded start timeout configurable for tests ([#31](https://github.com/visdomtech/orcacommon/issues/31)) ([3ffb518](https://github.com/visdomtech/orcacommon/commit/3ffb518fceea8d67ab61b9a379de0505162027f7))
+
 ## [0.10.0](https://github.com/visdomtech/orcacommon/compare/v0.9.0...v0.10.0) (2026-10-20)
 
 

@@ -52,7 +52,11 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 // file source. It acquires a PostgreSQL advisory lock to prevent concurrent
 // replicas from racing. Returns a non-nil error if any migration fails;
 // callers must not start the server in that case.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string) error {
+//
+// When rebaseline is non-empty, the function performs an atomic rebaseline
+// operation instead of normal migration execution. See doRebaseline for
+// the full precondition list and atomic sequence.
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string, rebaseline string) error {
 	if migrator == nil {
 		return nil
 	}

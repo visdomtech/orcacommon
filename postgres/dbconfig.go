@@ -21,6 +21,12 @@ type DBConfig struct {
 	// atlas_schema_revisions table in that schema; existing migration history
 	// in "public" is not carried over.
 	MigrationSchema     string `env:"MIGRATION_SCHEMA"      envDefault:"public"`
+	// RebaselineLastMigration, when non-empty, enables the rebaseline
+	// operation. It specifies the version of the last applied migration
+	// that must match the latest revision in the history table and the
+	// single migration file in the directory. An empty value (the default)
+	// preserves all current migration behavior.
+	RebaselineLastMigration string `env:"REBASELINE_LAST_MIGRATION"`
 	DatabaseURLTemplate string `env:"URL_TEMPLATE" envDefault:"postgres:tc://[username]:[password]@[host]:[port]/[database_name]"`
 }
 
@@ -57,6 +63,7 @@ func (d DBConfig) LogValue() slog.Value {
 		slog.String("name", d.Name),
 		slog.String("cloud_sql_instance", d.CloudSQLInstance),
 		slog.String("migration_schema", d.MigrationSchema),
+		slog.String("rebaseline_last_migration", d.RebaselineLastMigration),
 		slog.String("url_template", d.DatabaseURLTemplate),
 	)
 }

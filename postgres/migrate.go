@@ -12,7 +12,6 @@ import (
 
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/postgres"
-	atlasschema "ariga.io/atlas/sql/schema"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -69,28 +68,45 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
 
-	// Set search_path so that atlas operates within the specified schema.
-	// The default is "public" (DBConfig.MigrationSchema).
-	if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
-		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
-	}
-
-	driver, err := postgres.Open(sqlDB)
-	if err != nil {
-		return fmt.Errorf("migrate: open atlas driver: %w", err)
-	}
-
 	dir, err := embedDir(migrator.migrationFiles, key)
 	if err != nil {
 		return fmt.Errorf("migrate: open migration dir: %w", err)
 	}
 
-	if err := acquireAdvisoryLock(ctx, sqlDB); err != nil {
+	// Pin a dedicated connection for advisory lock ownership and (when
+	// enabled) the rebaseline transaction. This prevents the lock from
+	// drifting between pooled sessions.
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	// Set search_path on the pinned connection so that atlas and
+	// rebaseline operations target the specified schema.
+	if _, err := conn.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
+		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
+	}
+
+	if err := acquireAdvisoryLock(ctx, conn); err != nil {
 		return err
 	}
-	defer releaseAdvisoryLock(ctx, sqlDB)
+	defer releaseAdvisoryLock(ctx, conn)
 
-	rrw := newPGRevisions(sqlDB)
+	// Rebaseline branch: when enabled, perform the atomic rebaseline
+	// on the locked connection and return without executing any migration SQL.
+	if rebaseline != "" {
+		return doRebaseline(ctx, conn, pool, dir, rebaseline, schema)
+	}
+
+	// Normal migration path: open the atlas driver on the pinned
+	// connection and execute pending migrations.
+	driver, err := postgres.Open(conn)
+	if err != nil {
+		return fmt.Errorf("migrate: open atlas driver: %w", err)
+	}
+
+	rrw := newPGRevisions(conn)
 	if err := rrw.init(ctx); err != nil {
 		return fmt.Errorf("migrate: init revisions table: %w", err)
 	}
@@ -211,13 +227,13 @@ func versionPrefix(name string) string {
 	return name[:idx]
 }
 
-func acquireAdvisoryLock(ctx context.Context, db *sql.DB) error {
+func acquireAdvisoryLock(ctx context.Context, conn *sql.Conn) error {
 	const maxWait = 30 * time.Second
 	const poll = 500 * time.Millisecond
 	deadline := time.Now().Add(maxWait)
 	for {
 		var locked bool
-		if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", advisoryLockKey).Scan(&locked); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", advisoryLockKey).Scan(&locked); err != nil {
 			return fmt.Errorf("migrate: advisory lock query: %w", err)
 		}
 		if locked {
@@ -231,19 +247,27 @@ func acquireAdvisoryLock(ctx context.Context, db *sql.DB) error {
 	}
 }
 
-func releaseAdvisoryLock(ctx context.Context, db *sql.DB) {
-	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
+func releaseAdvisoryLock(ctx context.Context, conn *sql.Conn) {
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
 		slog.WarnContext(ctx, "atlas migration: failed to release advisory lock", "error", err)
 	}
 }
 
+// execQuerier abstracts *sql.DB, *sql.Conn, and *sql.Tx for query execution.
+// All three types implement this interface.
+type execQuerier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // pgRevisions is a PostgreSQL-backed RevisionReadWriter that persists migration state.
 type pgRevisions struct {
-	db      *sql.DB
+	db      execQuerier
 	typeMap *pgtype.Map
 }
 
-func newPGRevisions(db *sql.DB) *pgRevisions {
+func newPGRevisions(db execQuerier) *pgRevisions {
 	m := pgtype.NewMap()
 	m.RegisterDefaultPgType([]string{}, "text[]")
 	return &pgRevisions{db: db, typeMap: m}
@@ -378,8 +402,21 @@ func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// doRebaseline replaces the existing migration history with a single baseline
+// revision. It validates all preconditions, backs up the old history table,
+// creates a fresh one, and writes the baseline revision — all atomically.
+//
+// This is a stub; Task 4 provides the full implementation.
+func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir migrate.Dir, version string, schema string) error {
+	return fmt.Errorf("migrate: rebaseline not yet implemented")
+}
+
 // Ensure pgRevisions implements the interface at compile time.
 var _ migrate.RevisionReadWriter = (*pgRevisions)(nil)
 
-// Ensure postgres.Driver satisfies schema.ExecQuerier (checked at compile time via usage in Open).
-var _ atlasschema.ExecQuerier = (*sql.DB)(nil)
+// Compile-time checks: *sql.DB, *sql.Conn, and *sql.Tx all satisfy execQuerier.
+var (
+	_ execQuerier = (*sql.DB)(nil)
+	_ execQuerier = (*sql.Conn)(nil)
+	_ execQuerier = (*sql.Tx)(nil)
+)

@@ -20,25 +20,16 @@ import (
 // advisoryLockKey is a stable application-wide lock key for serialising migrations across replicas.
 const advisoryLockKey = int64(773492011)
 
-// Migrator bundles the migration file source with a caller-supplied baseline
-// predicate. It is passed to OpenPool (and internally to runMigrations) so that
-// the baseline decision is made by the caller rather than hard-coded.
+// Migrator bundles the migration file source. It is passed to OpenPool
+// (and internally to runMigrations) to locate the embedded migration files.
 type Migrator struct {
 	migrationFiles fs.FS
-	// IsBaseline is invoked by runMigrations to determine whether the current
-	// run should only record a baseline (i.e. mark existing migrations as
-	// already applied without executing their SQL). A nil func disables
-	// baseline handling entirely.
-	IsBaseline func(ctx context.Context, pool *pgxpool.Pool) bool
 }
 
-// NewMigrator creates a Migrator with the supplied migration file source and
-// baseline predicate. Either argument may be nil; a nil IsBaseline disables
-// baseline detection.
-func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool.Pool) bool) *Migrator {
+// NewMigrator creates a Migrator with the supplied migration file source.
+func NewMigrator(migrationFiles fs.FS) *Migrator {
 	return &Migrator{
 		migrationFiles: migrationFiles,
-		IsBaseline:     isBaseline,
 	}
 }
 
@@ -49,10 +40,7 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 //
 // When rebaseline is non-empty, the function performs an atomic rebaseline
 // operation instead of normal migration execution. See doRebaseline for
-// the full precondition list and atomic sequence. Rebaseline takes
-// precedence over Migrator.IsBaseline: when enabled, the atomic rebaseline
-// runs and the function returns without executing any migration SQL or
-// invoking the baseline predicate.
+// the full precondition list and atomic sequence.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string, rebaseline string) error {
 	if migrator == nil {
 		return nil
@@ -111,28 +99,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 		return fmt.Errorf("migrate: init revisions table: %w", err)
 	}
 
-	// Ask the caller-supplied predicate whether this run should only set a
-	// baseline (mark the first migration as already applied without executing
-	// its SQL). A nil IsBaseline disables baseline handling entirely.
 	allOpts := []migrate.ExecutorOption{
 		migrate.WithExecOrder(migrate.ExecOrderNonLinear),
-	}
-
-	if migrator.IsBaseline != nil && migrator.IsBaseline(ctx, pool) {
-		files, ferr := dir.Files()
-		if ferr != nil {
-			return fmt.Errorf("migrate: list migration files: %w", ferr)
-		}
-		if len(files) > 0 {
-			baselineVer := files[0].Version()
-			slog.InfoContext(ctx, "atlas migration: setting baseline",
-				"version", baselineVer,
-				"description", files[0].Desc(),
-			)
-			allOpts = append(allOpts, migrate.WithBaselineVersion(baselineVer))
-		}
-	} else {
-		allOpts = append(allOpts, migrate.WithAllowDirty(true))
+		migrate.WithAllowDirty(true),
 	}
 
 	executor, err := migrate.NewExecutor(driver, dir, rrw, allOpts...)

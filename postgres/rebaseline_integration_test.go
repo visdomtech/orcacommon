@@ -201,7 +201,7 @@ func TestRebaseline_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	if err := runMigrations(ctx, pool, migrator, "rebaseline-success", "public", rebaselineVersion); err != nil {
 		t.Fatalf("rebaseline: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestRebaseline_NoSchemaExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	if err := runMigrations(ctx, pool, migrator, "rebaseline-noexec", "public", rebaselineVersion); err != nil {
 		t.Fatalf("rebaseline: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestRebaseline_MissingHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	err = runMigrations(ctx, pool, migrator, "rebaseline-missing", "public", rebaselineVersion)
 	if err == nil {
 		t.Fatal("expected error for missing history, got nil")
@@ -327,7 +327,7 @@ func TestRebaseline_VersionMismatch_HistoryLatest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	err = runMigrations(ctx, pool, migrator, "rebaseline-vermismatch", "public", rebaselineVersion)
 	if err == nil {
 		t.Fatal("expected error for version mismatch, got nil")
@@ -363,7 +363,7 @@ func TestRebaseline_VersionMismatch_FileVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	// Configure a version that matches history but not the file.
 	err = runMigrations(ctx, pool, migrator, "rebaseline-filemismatch", "public", wrongVersion)
 	if err == nil {
@@ -461,7 +461,7 @@ func TestRebaseline_IncompleteHistory_PartialRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	err = runMigrations(ctx, pool, migrator, "rebaseline-partial", "public", rebaselineVersion)
 	if err == nil {
 		t.Fatal("expected error for partial revision, got nil")
@@ -501,7 +501,7 @@ func TestRebaseline_IncompleteHistory_ErrorRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	err = runMigrations(ctx, pool, migrator, "rebaseline-errorrev", "public", rebaselineVersion)
 	if err == nil {
 		t.Fatal("expected error for error revision, got nil")
@@ -576,7 +576,7 @@ func TestRebaseline_DisabledNormalMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	if err := runMigrations(ctx, pool, migrator, "rebaseline-normal", "public", ""); err != nil {
 		t.Fatalf("normal migration: %v", err)
 	}
@@ -589,46 +589,6 @@ func TestRebaseline_DisabledNormalMigration(t *testing.T) {
 	// Assert: revision table has one row (the applied migration).
 	if countRevisions(t, db) != 1 {
 		t.Fatalf("expected 1 revision after normal migration, got %d", countRevisions(t, db))
-	}
-}
-
-// TestRebaseline_DisabledInitialBaseline proves that IsBaseline retains its
-// current behavior when the rebaseline setting is empty.
-func TestRebaseline_DisabledInitialBaseline(t *testing.T) {
-	env := startRebaselinePostgres(t)
-	defer env.cleanup()
-	ctx := context.Background()
-	db := env.openSQLDB(t)
-	defer db.Close()
-	dirFS := loadRebaselineDir(t)
-
-	// Run with IsBaseline returning true and empty rebaseline.
-	pool, err := openTestPool(t, env.dsn)
-	if err != nil {
-		t.Fatalf("open pool: %v", err)
-	}
-	isBaseline := func(ctx context.Context, pool *pgxpool.Pool) bool { return true }
-	migrator := NewMigrator(dirFS, isBaseline)
-	if err := runMigrations(ctx, pool, migrator, "rebaseline-baseline", "public", ""); err != nil {
-		t.Fatalf("initial baseline: %v", err)
-	}
-
-	// Assert: sentinel table does NOT exist (baseline doesn't execute SQL).
-	if tableExists(t, db, "migration_sentinel") {
-		t.Fatal("sentinel table should not exist after baseline")
-	}
-
-	// Assert: revision table has one baseline row.
-	if countRevisions(t, db) != 1 {
-		t.Fatalf("expected 1 revision after baseline, got %d", countRevisions(t, db))
-	}
-	var revType int
-	err = db.QueryRow("SELECT type FROM atlas_schema_revisions LIMIT 1").Scan(&revType)
-	if err != nil {
-		t.Fatalf("query revision type: %v", err)
-	}
-	if revType != 1 { // RevisionTypeBaseline
-		t.Errorf("expected revision type 1 (baseline), got %d", revType)
 	}
 }
 
@@ -649,7 +609,7 @@ func TestRebaseline_RepeatedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool 1: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	if err := runMigrations(ctx, pool1, migrator, "rebaseline-repeat1", "public", rebaselineVersion); err != nil {
 		t.Fatalf("first rebaseline: %v", err)
 	}
@@ -662,7 +622,7 @@ func TestRebaseline_RepeatedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool 2: %v", err)
 	}
-	migrator2 := NewMigrator(dirFS, nil)
+	migrator2 := NewMigrator(dirFS)
 	if err := runMigrations(ctx, pool2, migrator2, "rebaseline-repeat2", "public", rebaselineVersion); err != nil {
 		t.Fatalf("second rebaseline: %v", err)
 	}
@@ -708,7 +668,7 @@ func TestRebaseline_ConcurrentCalls(t *testing.T) {
 				errs[idx] = err
 				return
 			}
-			migrator := NewMigrator(dirFS, nil)
+			migrator := NewMigrator(dirFS)
 			errs[idx] = runMigrations(ctx, pool, migrator, fmt.Sprintf("rebaseline-concurrent-%d", idx), "public", rebaselineVersion)
 		}(i)
 	}
@@ -757,7 +717,7 @@ func TestRebaseline_FailureInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
 	}
-	migrator := NewMigrator(dirFS, nil)
+	migrator := NewMigrator(dirFS)
 	err = runMigrations(ctx, pool, migrator, "rebaseline-inventory", "public", "wrong_version")
 	if err == nil {
 		t.Fatal("expected rejection error, got nil")

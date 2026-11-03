@@ -6,7 +6,7 @@ Accepted
 ## Context
 The `postgres` package manages Atlas-based database migrations using the `atlas_schema_revisions` history table. After migration files are consolidated (e.g., squashing multiple migrations into one), the history table contains stale entries that no longer match the migration directory. Without a rebaseline mechanism, operators must manually manipulate the history table — a fragile and error-prone process.
 
-The existing `Migrator.IsBaseline` mechanism only handles the initial deployment baseline (first migration marked as already applied). It does not support replacing an existing history after consolidation.
+The original `Migrator.IsBaseline` mechanism (now removed) only handled the initial deployment baseline (first migration marked as already applied). It did not support replacing an existing history after consolidation.
 
 ## Decision
 Add `DBConfig.RebaselineLastMigration` (env: `DB_REBASELINE_LAST_MIGRATION`) to enable an atomic rebaseline operation. When set:

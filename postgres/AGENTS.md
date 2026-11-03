@@ -36,9 +36,7 @@ OpenPool(ctx, dbcfg, migrator)
          │    ├── Atomic: create fresh table, write baseline revision
          │    └── Return (migration SQL never executes)
          ├── pgRevisions (custom RevisionReadWriter backed by atlas_schema_revisions)
-         ├── Optional baseline (IsBaseline predicate → mark first migration as applied)
-         │    └── Non-baseline path: WithAllowDirty(true)
-         └── Execute pending migrations (non-linear order)
+         └── Execute pending migrations (non-linear order, WithAllowDirty)
 ```
 
 ## Components
@@ -65,11 +63,10 @@ Low-level connection function. Detects three special URL prefixes:
 
 ### `Migrator` / `runMigrations` (`migrate.go`)
 Atlas-based migration runner:
-- **`Migrator`** — bundles `fs.FS` (migration files) with a caller-supplied `IsBaseline` predicate. Constructed via `NewMigrator(migrationFiles fs.FS, isBaseline func(ctx, pool) bool)`. A nil `isBaseline` disables baseline detection.
+- **`Migrator`** — bundles `fs.FS` (migration files). Constructed via `NewMigrator(migrationFiles fs.FS)`.
 - **Advisory lock** — `pg_try_advisory_lock(773492011)` with 500ms polling, 30s max wait.
 - **`pgRevisions`** — custom `RevisionReadWriter` backed by `atlas_schema_revisions` table (auto-created).
 - **`embedDir`** — loads `fs.FS` into an Atlas `MemDir`, detects duplicate version prefixes.
-- **Baseline** — when `IsBaseline` returns true, the first migration is recorded without executing SQL.
 - **Rebaseline** — when `DBConfig.RebaselineLastMigration` is non-empty, replaces the full migration history with one baseline revision. See [Rebaseline Operation](#rebaseline-operation) below.
 
 ### Graceful Shutdown (`pool.go`)
@@ -132,7 +129,7 @@ If any precondition fails, a clear error is returned before any history change. 
 
 **Recovery:** Manual. The library does not restore, retain, or delete backups. Operators must remove the `DB_REBASELINE_LAST_MIGRATION` setting after a successful rollout. Schema drift detection, backup restoration, and backup retention remain outside the library.
 
-**Precedence:** When enabled, rebaseline takes precedence over `Migrator.IsBaseline`. An empty setting preserves all current migration and initial baseline behavior.
+**Precedence:** When enabled, rebaseline takes precedence over normal migration execution and returns before any migration SQL runs.
 
 **Repeated runs:** Each valid enabled run creates a distinct backup. Operators should remove the setting promptly.
 

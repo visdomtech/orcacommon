@@ -28,7 +28,7 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	testMigrations = NewMigrator(sub, nil)
+	testMigrations = NewMigrator(sub)
 }
 
 func TestMain(m *testing.M) {

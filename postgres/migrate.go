@@ -20,11 +20,6 @@ import (
 // advisoryLockKey is a stable application-wide lock key for serialising migrations across replicas.
 const advisoryLockKey = int64(773492011)
 
-// runMigrationsHook is an optional callback invoked by runMigrations after the
-// nil-migrator guard but before any real work. Tests use it to count or
-// intercept migration calls. A non-nil return short-circuits runMigrations.
-var runMigrationsHook func(ctx context.Context, pool *pgxpool.Pool, key, schema, rebaseline string) error
-
 // Migrator bundles the migration file source with a caller-supplied baseline
 // predicate. It is passed to OpenPool (and internally to runMigrations) so that
 // the baseline decision is made by the caller rather than hard-coded.
@@ -61,11 +56,6 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string, rebaseline string) error {
 	if migrator == nil {
 		return nil
-	}
-
-	// Test hook: when set, delegate entirely to it and return.
-	if runMigrationsHook != nil {
-		return runMigrationsHook(ctx, pool, key, schema, rebaseline)
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(pool)

@@ -406,9 +406,136 @@ func quoteIdent(name string) string {
 // revision. It validates all preconditions, backs up the old history table,
 // creates a fresh one, and writes the baseline revision — all atomically.
 //
-// This is a stub; Task 4 provides the full implementation.
+// Preconditions (all checked before any persistent change):
+//  1. Migration directory checksum is valid (atlas.sum matches files).
+//  2. Exactly one versioned migration file exists in the directory.
+//  3. The migration file version matches the configured rebaseline version.
+//  4. The atlas_schema_revisions table exists and is non-empty.
+//  5. The latest revision version matches the configured rebaseline version.
+//  6. The latest revision is fully applied (applied == total) with no error.
+//
+// Atomic operation (single transaction):
+//  1. Rename atlas_schema_revisions to atlas_schema_revisions_backup_<timestamp>.
+//  2. Rename the primary-key index to <backup_table>_pkey.
+//  3. Create a fresh atlas_schema_revisions table.
+//  4. Write one baseline revision for the migration file.
+//  5. Commit (or rollback on any failure).
+//
+// The migration file SQL is never executed.
 func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir migrate.Dir, version string, schema string) error {
-	return fmt.Errorf("migrate: rebaseline not yet implemented")
+	// 1. Validate migration directory checksum.
+	if err := migrate.Validate(dir); err != nil {
+		return fmt.Errorf("migrate: rebaseline: validate migration dir: %w", err)
+	}
+
+	// 2. Require exactly one migration file.
+	files, err := dir.Files()
+	if err != nil {
+		return fmt.Errorf("migrate: rebaseline: list migration files: %w", err)
+	}
+	if len(files) != 1 {
+		return fmt.Errorf("migrate: rebaseline: expected exactly 1 migration file, found %d", len(files))
+	}
+
+	// 3. Require file version to match configured version.
+	fileVersion := files[0].Version()
+	if fileVersion != version {
+		return fmt.Errorf("migrate: rebaseline: migration file version %q does not match configured version %q", fileVersion, version)
+	}
+
+	// 4. Check history table existence without creating it.
+	var tableExists bool
+	if err := conn.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'atlas_schema_revisions')`,
+		schema,
+	).Scan(&tableExists); err != nil {
+		return fmt.Errorf("migrate: rebaseline: check history table: %w", err)
+	}
+	if !tableExists {
+		return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table does not exist in schema %q", schema)
+	}
+
+	// 5-6. Read the latest revision and validate preconditions.
+	var (
+		latestVersion string
+		applied       int
+		total         int
+		revError      string
+	)
+	if err := conn.QueryRowContext(ctx,
+		`SELECT version, applied, total, error FROM atlas_schema_revisions ORDER BY version DESC LIMIT 1`,
+	).Scan(&latestVersion, &applied, &total, &revError); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table is empty")
+		}
+		return fmt.Errorf("migrate: rebaseline: read latest revision: %w", err)
+	}
+	if latestVersion != version {
+		return fmt.Errorf("migrate: rebaseline: latest history version %q does not match configured version %q", latestVersion, version)
+	}
+	if applied != total {
+		return fmt.Errorf("migrate: rebaseline: latest revision %q is partially applied (applied=%d, total=%d)", latestVersion, applied, total)
+	}
+	if revError != "" {
+		return fmt.Errorf("migrate: rebaseline: latest revision %q has error: %s", latestVersion, revError)
+	}
+
+	// --- Begin atomic operation ---
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate: rebaseline: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Generate backup timestamp.
+	now := time.Now().UTC()
+	ts := fmt.Sprintf("%04d%02d%02dT%02d%02d%02d%09dZ",
+		now.Year(), now.Month(), now.Day(),
+		now.Hour(), now.Minute(), now.Second(), now.Nanosecond())
+	backupTable := "atlas_schema_revisions_backup_" + ts
+	backupIndex := backupTable + "_pkey"
+
+	// 1. Rename the existing history table to the backup name.
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdent("atlas_schema_revisions"), quoteIdent(backupTable)),
+	); err != nil {
+		return fmt.Errorf("migrate: rebaseline: rename history table: %w", err)
+	}
+
+	// 2. Rename the primary-key index so the fresh table can use the original name.
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", quoteIdent("atlas_schema_revisions_pkey"), quoteIdent(backupIndex)),
+	); err != nil {
+		return fmt.Errorf("migrate: rebaseline: rename primary key index: %w", err)
+	}
+
+	// 3. Create the fresh history table.
+	rrw := newPGRevisions(tx)
+	if err := rrw.init(ctx); err != nil {
+		return fmt.Errorf("migrate: rebaseline: create fresh history table: %w", err)
+	}
+
+	// 4. Write the baseline revision.
+	rev := &migrate.Revision{
+		Version:     fileVersion,
+		Description: files[0].Desc(),
+		Type:        migrate.RevisionTypeBaseline,
+		ExecutedAt:  time.Now().UTC(),
+	}
+	if err := rrw.WriteRevision(ctx, rev); err != nil {
+		return fmt.Errorf("migrate: rebaseline: write baseline revision: %w", err)
+	}
+
+	// 5. Commit.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate: rebaseline: commit: %w", err)
+	}
+
+	slog.InfoContext(ctx, "atlas migration: rebaseline complete",
+		"version", fileVersion,
+		"backup_table", backupTable,
+	)
+	return nil
 }
 
 // Ensure pgRevisions implements the interface at compile time.

@@ -104,7 +104,7 @@ func seedHistory(t *testing.T, db *sql.DB, versions ...string) {
 			INSERT INTO atlas_schema_revisions
 				(version, description, type, applied, total, executed_at, execution_time,
 				 error, error_stmt, hash, partial_hashes, operator_version)
-			VALUES ($1, $2, 2, $3, $3, now(), 0, '', '', 'hash_'+$1, '{}', 'test')
+			VALUES ($1, $2, 2, $3, $3, now(), 0, '', '', 'hash_' || $1, '{}', 'test')
 			ON CONFLICT (version) DO UPDATE SET
 				description=EXCLUDED.description, applied=EXCLUDED.applied, total=EXCLUDED.total`,
 			v, desc, i+1)

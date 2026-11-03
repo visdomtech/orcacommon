@@ -23,7 +23,7 @@ const advisoryLockKey = int64(773492011)
 // runMigrationsHook is an optional callback invoked by runMigrations after the
 // nil-migrator guard but before any real work. Tests use it to count or
 // intercept migration calls. A non-nil return short-circuits runMigrations.
-var runMigrationsHook func(ctx context.Context, pool *pgxpool.Pool, key, schema string) error
+var runMigrationsHook func(ctx context.Context, pool *pgxpool.Pool, key, schema, rebaseline string) error
 
 // Migrator bundles the migration file source with a caller-supplied baseline
 // predicate. It is passed to OpenPool (and internally to runMigrations) so that
@@ -54,7 +54,10 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 //
 // When rebaseline is non-empty, the function performs an atomic rebaseline
 // operation instead of normal migration execution. See doRebaseline for
-// the full precondition list and atomic sequence.
+// the full precondition list and atomic sequence. Rebaseline takes
+// precedence over Migrator.IsBaseline: when enabled, the atomic rebaseline
+// runs and the function returns without executing any migration SQL or
+// invoking the baseline predicate.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string, rebaseline string) error {
 	if migrator == nil {
 		return nil
@@ -62,7 +65,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 
 	// Test hook: when set, delegate entirely to it and return.
 	if runMigrationsHook != nil {
-		return runMigrationsHook(ctx, pool, key, schema)
+		return runMigrationsHook(ctx, pool, key, schema, rebaseline)
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(pool)
@@ -87,6 +90,13 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 	if _, err := conn.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
 		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
 	}
+	// Reset search_path before returning the connection to the pool so
+	// that subsequent borrowers do not inherit the modified session state.
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), "RESET search_path"); err != nil {
+			slog.WarnContext(ctx, "migrate: failed to reset search_path", "error", err)
+		}
+	}()
 
 	if err := acquireAdvisoryLock(ctx, conn); err != nil {
 		return err
@@ -96,7 +106,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, 
 	// Rebaseline branch: when enabled, perform the atomic rebaseline
 	// on the locked connection and return without executing any migration SQL.
 	if rebaseline != "" {
-		return doRebaseline(ctx, conn, pool, dir, rebaseline, schema)
+		return doRebaseline(ctx, conn, dir, rebaseline, schema)
 	}
 
 	// Normal migration path: open the atlas driver on the pinned
@@ -422,7 +432,13 @@ func quoteIdent(name string) string {
 //  5. Commit (or rollback on any failure).
 //
 // The migration file SQL is never executed.
-func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir migrate.Dir, version string, schema string) error {
+func doRebaseline(ctx context.Context, conn *sql.Conn, dir migrate.Dir, version string, schema string) (err error) {
+	start := time.Now()
+	defer func() {
+		if err != nil {
+			slog.ErrorContext(ctx, "atlas migration: rebaseline failed", "error", err)
+		}
+	}()
 	// 1. Validate migration directory checksum.
 	if err := migrate.Validate(dir); err != nil {
 		return fmt.Errorf("migrate: rebaseline: validate migration dir: %w", err)
@@ -466,7 +482,7 @@ func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir m
 		`SELECT version, applied, total, error FROM atlas_schema_revisions ORDER BY version DESC LIMIT 1`,
 	).Scan(&latestVersion, &applied, &total, &revError); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table is empty")
+			return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table exists but contains no rows")
 		}
 		return fmt.Errorf("migrate: rebaseline: read latest revision: %w", err)
 	}
@@ -503,6 +519,9 @@ func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir m
 	}
 
 	// 2. Rename the primary-key index so the fresh table can use the original name.
+	// PostgreSQL auto-generates the PK index name as <table>_pkey when the
+	// constraint is unnamed (which createRevTable relies on). If a future
+	// change names the constraint explicitly, this must be updated.
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", quoteIdent("atlas_schema_revisions_pkey"), quoteIdent(backupIndex)),
 	); err != nil {
@@ -515,12 +534,25 @@ func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir m
 		return fmt.Errorf("migrate: rebaseline: create fresh history table: %w", err)
 	}
 
-	// 4. Write the baseline revision.
+	// 4. Write the baseline revision. Populate the hash from the migration
+	// file checksum so that Atlas tooling can verify content integrity.
+	var fileHash string
+	if hf, hfErr := dir.Checksum(); hfErr == nil {
+		for _, entry := range hf {
+			if entry.N == files[0].Name() {
+				fileHash = entry.H
+				break
+			}
+		}
+	}
 	rev := &migrate.Revision{
 		Version:     fileVersion,
 		Description: files[0].Desc(),
 		Type:        migrate.RevisionTypeBaseline,
+		Applied:     1,
+		Total:       1,
 		ExecutedAt:  time.Now().UTC(),
+		Hash:        fileHash,
 	}
 	if err := rrw.WriteRevision(ctx, rev); err != nil {
 		return fmt.Errorf("migrate: rebaseline: write baseline revision: %w", err)
@@ -534,6 +566,7 @@ func doRebaseline(ctx context.Context, conn *sql.Conn, pool *pgxpool.Pool, dir m
 	slog.InfoContext(ctx, "atlas migration: rebaseline complete",
 		"version", fileVersion,
 		"backup_table", backupTable,
+		"duration_ms", time.Since(start).Milliseconds(),
 	)
 	return nil
 }

@@ -21,7 +21,7 @@ OpenPool(ctx, dbcfg, migrator)
          │
          └── Standard postgres:// URL → pgxpool.New()
     │
-    └── runMigrations(ctx, pool, migrator, rebaseline)
+    └── runMigrations(ctx, pool, migrator, key, schema, rebaseline)
          ├── Set search_path to MigrationSchema (default: "public")
          ├── Open Atlas postgres driver (on pinned connection)
          ├── Load migration files from embed.FS into Atlas MemDir
@@ -135,6 +135,8 @@ If any precondition fails, a clear error is returned before any history change. 
 **Precedence:** When enabled, rebaseline takes precedence over `Migrator.IsBaseline`. An empty setting preserves all current migration and initial baseline behavior.
 
 **Repeated runs:** Each valid enabled run creates a distinct backup. Operators should remove the setting promptly.
+
+**Required privileges:** The database user must own the `atlas_schema_revisions` table or have `ALTER` privilege on it, plus `CREATE TABLE` in the target schema. This is in addition to whatever privileges normal migrations require.
 
 ### Special URL prefixes
 - `postgres:embedded:?datapath=/tmp/pgdata&user=dev&password=dev_only&name=mydb` (local dev only — never use weak credentials for real data)

@@ -263,7 +263,7 @@ func TestOpenPoolWithKey_RunsMigrationsOnCachedPool(t *testing.T) {
 	// Install a counting hook; defer cleanup.
 	var callCount int
 	origHook := runMigrationsHook
-	runMigrationsHook = func(_ context.Context, _ *pgxpool.Pool, _, _ string) error {
+	runMigrationsHook = func(_ context.Context, _ *pgxpool.Pool, _, _, _ string) error {
 		callCount++
 		return nil
 	}

@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"ariga.io/atlas/sql/migrate"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -379,17 +381,56 @@ func TestRebaseline_VersionMismatch_FileVersion(t *testing.T) {
 func TestRebaseline_MultipleFiles(t *testing.T) {
 	env := startRebaselinePostgres(t)
 	defer env.cleanup()
+	ctx := context.Background()
 	db := env.openSQLDB(t)
 	defer db.Close()
 
-	// Create an in-memory migration dir with two files.
-	// We can't easily embed two files, so we test this by loading from
-	// the single-file dir — the plan says "reject zero and multiple SQL
-	// migration files". The multiple-files case requires a separate test
-	// migration dir, which is complex to embed. For now, we test the
-	// zero-files case and note that the implementation must check len(files)==1.
-	// This test documents the expected behavior for when a multi-file dir exists.
-	t.Log("multiple-files test: deferred to implementation validation")
+	// Seed valid history.
+	seedHistory(t, db, rebaselineVersion)
+
+	// Build a MemDir with two migration files and a valid atlas.sum.
+	mem := migrate.OpenMemDir("rebaseline_multi_test")
+	defer func() { _ = mem.Close() }()
+	_ = mem.WriteFile(rebaselineVersion+"_first.sql", []byte("CREATE TABLE t1(id int);"))
+	_ = mem.WriteFile("20260102000000_second.sql", []byte("CREATE TABLE t2(id int);"))
+	files, _ := mem.Files()
+	hf, err := migrate.NewHashFile(files)
+	if err != nil {
+		t.Fatalf("compute hash: %v", err)
+	}
+	sumBytes, err := hf.MarshalText()
+	if err != nil {
+		t.Fatalf("marshal hash: %v", err)
+	}
+	_ = mem.WriteFile("atlas.sum", sumBytes)
+
+	// Get a pinned connection for doRebaseline.
+	pool, err := openTestPool(t, env.dsn)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Close()
+	_, _ = conn.ExecContext(ctx, `SET search_path TO "public"`)
+
+	// Call doRebaseline directly — must reject with "exactly 1".
+	err = doRebaseline(ctx, conn, mem, rebaselineVersion, "public")
+	if err == nil {
+		t.Fatal("expected error for multiple files, got nil")
+	}
+	if !strings.Contains(err.Error(), "exactly 1") {
+		t.Errorf("expected 'exactly 1' error, got: %v", err)
+	}
+
+	// Assert: no history changes.
+	if len(listBackupTables(t, db)) != 0 {
+		t.Error("expected no backup tables after multiple files rejection")
+	}
 }
 
 // TestRebaseline_IncompleteHistory_PartialRevision rejects when the latest
@@ -476,21 +517,47 @@ func TestRebaseline_IncompleteHistory_ErrorRevision(t *testing.T) {
 func TestRebaseline_ChecksumFailure(t *testing.T) {
 	env := startRebaselinePostgres(t)
 	defer env.cleanup()
+	ctx := context.Background()
 	db := env.openSQLDB(t)
 	defer db.Close()
 
-	// Build a MemDir with mismatched content (corrupt the SQL).
-	// We can't easily corrupt the embedded FS, so we test via the
-	// embedDir path: the atlas.sum in testdata/rebaseline/ is correct,
-	// so this test verifies the Validate call works by using a dir
-	// where the sum is intentionally wrong. For now, we test the
-	// success path and note that the implementation calls Validate
-	// before any history change.
-	t.Log("checksum failure test: requires corrupted embed dir — deferred to implementation validation")
+	// Seed valid history.
+	seedHistory(t, db, rebaselineVersion)
 
-	// Assert: no backup tables exist (no history changes).
+	// Build a MemDir with one SQL file but a CORRUPTED atlas.sum.
+	mem := migrate.OpenMemDir("rebaseline_cksum_test")
+	defer func() { _ = mem.Close() }()
+	_ = mem.WriteFile(rebaselineVersion+"_test.sql", []byte("CREATE TABLE t(id int);"))
+	// Write an atlas.sum with intentionally wrong hash values.
+	_ = mem.WriteFile("atlas.sum", []byte("h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"+
+		rebaselineVersion+"_test.sql h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=\n"))
+
+	// Get a pinned connection for doRebaseline.
+	pool, err := openTestPool(t, env.dsn)
+	if err != nil {
+		t.Fatalf("open pool: %v", err)
+	}
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer conn.Close()
+	_, _ = conn.ExecContext(ctx, `SET search_path TO "public"`)
+
+	// Call doRebaseline directly — must reject with checksum error.
+	err = doRebaseline(ctx, conn, mem, rebaselineVersion, "public")
+	if err == nil {
+		t.Fatal("expected error for checksum mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "validate migration dir") {
+		t.Errorf("expected checksum validation error, got: %v", err)
+	}
+
+	// Assert: no history changes.
 	if len(listBackupTables(t, db)) != 0 {
-		t.Error("expected no backup tables")
+		t.Error("expected no backup tables after checksum rejection")
 	}
 }
 

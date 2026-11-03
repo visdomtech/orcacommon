@@ -57,6 +57,16 @@ All packages are stateless libraries consumed by downstream services. The only p
 * **Integration tests:** `postgres/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./postgres/...` (requires Docker for TestContainers). `ephemeralauth/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./ephemeralauth/...` (requires network for live Cloudflare Turnstile API).
 * **Platform-guarded tests:** `utils/embedded_pg_test.go` is excluded on Windows via `//go:build !windows`
 
+#### Test Quality Rules
+
+> **Default to zero tests.** Do not create or update test files as part of feature implementation unless the user explicitly requests tests, or you are writing a pure, non-I/O algorithmic function (e.g., custom parsers, data transformations, pricing math) where edge cases must be proven. Test code is technical debt; never add it simply to demonstrate that code works.
+
+* **Zero mocks in unit tests.** Never mock databases, ORMs, network layers, or internal classes. Backend verification must either test pure business logic directly (no dependencies) or run as an integration test against a real local test boundary (TestContainers, embedded Postgres). If a real boundary does not exist, do not write the test.
+* **Zero snapshot and tautology tests.** Never write snapshot tests. Never write tests that merely assert framework behavior, type interfaces, basic getters/setters, struct field assignments, constructor wiring, or config passthrough.
+* **Test distinct business logic only.** Write tests for critical edge cases, security invariants, and realistic failure modes. Do not create redundant input variations solely to inflate test count.
+* **No redundant coverage.** Do not duplicate tests across packages (e.g., `LogValue` redaction is tested once, not in every package that uses it).
+* **No test hooks in library code.** Do not inject test-only variables, callbacks, or interfaces into production code to support testing. Tests must exercise real code paths.
+
 ### 2. Dependency Discipline
 * Keep the dependency tree lean. New external dependencies must be justified.
 * Prefer `pgx/v5` over `lib/pq` for all PostgreSQL operations.

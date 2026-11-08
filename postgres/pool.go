@@ -195,7 +195,7 @@ func OpenPoolWithKey(ctx context.Context, dbcfg DBConfig, migrator *Migrator, ke
 	if err != nil {
 		return nil, err
 	}
-	if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema); err != nil {
+	if err := runMigrations(ctx, pool, migrator, key, dbcfg.MigrationSchema, dbcfg.RebaselineLastMigration); err != nil {
 		return nil, err
 	}
 	return pool, nil

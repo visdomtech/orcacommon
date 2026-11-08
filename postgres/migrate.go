@@ -12,7 +12,6 @@ import (
 
 	"ariga.io/atlas/sql/migrate"
 	"ariga.io/atlas/sql/postgres"
-	atlasschema "ariga.io/atlas/sql/schema"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -21,30 +20,16 @@ import (
 // advisoryLockKey is a stable application-wide lock key for serialising migrations across replicas.
 const advisoryLockKey = int64(773492011)
 
-// runMigrationsHook is an optional callback invoked by runMigrations after the
-// nil-migrator guard but before any real work. Tests use it to count or
-// intercept migration calls. A non-nil return short-circuits runMigrations.
-var runMigrationsHook func(ctx context.Context, pool *pgxpool.Pool, key, schema string) error
-
-// Migrator bundles the migration file source with a caller-supplied baseline
-// predicate. It is passed to OpenPool (and internally to runMigrations) so that
-// the baseline decision is made by the caller rather than hard-coded.
+// Migrator bundles the migration file source. It is passed to OpenPool
+// (and internally to runMigrations) to locate the embedded migration files.
 type Migrator struct {
 	migrationFiles fs.FS
-	// IsBaseline is invoked by runMigrations to determine whether the current
-	// run should only record a baseline (i.e. mark existing migrations as
-	// already applied without executing their SQL). A nil func disables
-	// baseline handling entirely.
-	IsBaseline func(ctx context.Context, pool *pgxpool.Pool) bool
 }
 
-// NewMigrator creates a Migrator with the supplied migration file source and
-// baseline predicate. Either argument may be nil; a nil IsBaseline disables
-// baseline detection.
-func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool.Pool) bool) *Migrator {
+// NewMigrator creates a Migrator with the supplied migration file source.
+func NewMigrator(migrationFiles fs.FS) *Migrator {
 	return &Migrator{
 		migrationFiles: migrationFiles,
-		IsBaseline:     isBaseline,
 	}
 }
 
@@ -52,67 +37,71 @@ func NewMigrator(migrationFiles fs.FS, isBaseline func(context.Context, *pgxpool
 // file source. It acquires a PostgreSQL advisory lock to prevent concurrent
 // replicas from racing. Returns a non-nil error if any migration fails;
 // callers must not start the server in that case.
-func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string) error {
+//
+// When rebaseline is non-empty, the function performs an atomic rebaseline
+// operation instead of normal migration execution. See doRebaseline for
+// the full precondition list and atomic sequence.
+func runMigrations(ctx context.Context, pool *pgxpool.Pool, migrator *Migrator, key string, schema string, rebaseline string) error {
 	if migrator == nil {
 		return nil
 	}
 
-	// Test hook: when set, delegate entirely to it and return.
-	if runMigrationsHook != nil {
-		return runMigrationsHook(ctx, pool, key, schema)
-	}
-
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	defer sqlDB.Close()
-
-	// Set search_path so that atlas operates within the specified schema.
-	// The default is "public" (DBConfig.MigrationSchema).
-	if _, err := sqlDB.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
-		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
-	}
-
-	driver, err := postgres.Open(sqlDB)
-	if err != nil {
-		return fmt.Errorf("migrate: open atlas driver: %w", err)
-	}
 
 	dir, err := embedDir(migrator.migrationFiles, key)
 	if err != nil {
 		return fmt.Errorf("migrate: open migration dir: %w", err)
 	}
 
-	if err := acquireAdvisoryLock(ctx, sqlDB); err != nil {
+	// Pin a dedicated connection for advisory lock ownership and (when
+	// enabled) the rebaseline transaction. This prevents the lock from
+	// drifting between pooled sessions.
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: acquire connection: %w", err)
+	}
+	defer conn.Close()
+
+	// Set search_path on the pinned connection so that atlas and
+	// rebaseline operations target the specified schema.
+	if _, err := conn.ExecContext(ctx, "SET search_path TO "+quoteIdent(schema)); err != nil {
+		return fmt.Errorf("migrate: set search_path to %q: %w", schema, err)
+	}
+	// Reset search_path before returning the connection to the pool so
+	// that subsequent borrowers do not inherit the modified session state.
+	defer func() {
+		if _, err := conn.ExecContext(context.Background(), "RESET search_path"); err != nil {
+			slog.WarnContext(ctx, "migrate: failed to reset search_path", "error", err)
+		}
+	}()
+
+	if err := acquireAdvisoryLock(ctx, conn); err != nil {
 		return err
 	}
-	defer releaseAdvisoryLock(ctx, sqlDB)
+	defer releaseAdvisoryLock(ctx, conn)
 
-	rrw := newPGRevisions(sqlDB)
+	// Rebaseline branch: when enabled, perform the atomic rebaseline
+	// on the locked connection and return without executing any migration SQL.
+	if rebaseline != "" {
+		return doRebaseline(ctx, conn, dir, rebaseline, schema)
+	}
+
+	// Normal migration path: open the atlas driver on the pinned
+	// connection and execute pending migrations.
+	driver, err := postgres.Open(conn)
+	if err != nil {
+		return fmt.Errorf("migrate: open atlas driver: %w", err)
+	}
+
+	rrw := newPGRevisions(conn)
 	if err := rrw.init(ctx); err != nil {
 		return fmt.Errorf("migrate: init revisions table: %w", err)
 	}
 
-	// Ask the caller-supplied predicate whether this run should only set a
-	// baseline (mark the first migration as already applied without executing
-	// its SQL). A nil IsBaseline disables baseline handling entirely.
 	allOpts := []migrate.ExecutorOption{
 		migrate.WithExecOrder(migrate.ExecOrderNonLinear),
-	}
-
-	if migrator.IsBaseline != nil && migrator.IsBaseline(ctx, pool) {
-		files, ferr := dir.Files()
-		if ferr != nil {
-			return fmt.Errorf("migrate: list migration files: %w", ferr)
-		}
-		if len(files) > 0 {
-			baselineVer := files[0].Version()
-			slog.InfoContext(ctx, "atlas migration: setting baseline",
-				"version", baselineVer,
-				"description", files[0].Desc(),
-			)
-			allOpts = append(allOpts, migrate.WithBaselineVersion(baselineVer))
-		}
-	} else {
-		allOpts = append(allOpts, migrate.WithAllowDirty(true))
+		migrate.WithAllowDirty(true),
 	}
 
 	executor, err := migrate.NewExecutor(driver, dir, rrw, allOpts...)
@@ -207,13 +196,13 @@ func versionPrefix(name string) string {
 	return name[:idx]
 }
 
-func acquireAdvisoryLock(ctx context.Context, db *sql.DB) error {
+func acquireAdvisoryLock(ctx context.Context, conn *sql.Conn) error {
 	const maxWait = 30 * time.Second
 	const poll = 500 * time.Millisecond
 	deadline := time.Now().Add(maxWait)
 	for {
 		var locked bool
-		if err := db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", advisoryLockKey).Scan(&locked); err != nil {
+		if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", advisoryLockKey).Scan(&locked); err != nil {
 			return fmt.Errorf("migrate: advisory lock query: %w", err)
 		}
 		if locked {
@@ -227,19 +216,27 @@ func acquireAdvisoryLock(ctx context.Context, db *sql.DB) error {
 	}
 }
 
-func releaseAdvisoryLock(ctx context.Context, db *sql.DB) {
-	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
+func releaseAdvisoryLock(ctx context.Context, conn *sql.Conn) {
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey); err != nil {
 		slog.WarnContext(ctx, "atlas migration: failed to release advisory lock", "error", err)
 	}
 }
 
+// execQuerier abstracts *sql.DB, *sql.Conn, and *sql.Tx for query execution.
+// All three types implement this interface.
+type execQuerier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // pgRevisions is a PostgreSQL-backed RevisionReadWriter that persists migration state.
 type pgRevisions struct {
-	db      *sql.DB
+	db      execQuerier
 	typeMap *pgtype.Map
 }
 
-func newPGRevisions(db *sql.DB) *pgRevisions {
+func newPGRevisions(db execQuerier) *pgRevisions {
 	m := pgtype.NewMap()
 	m.RegisterDefaultPgType([]string{}, "text[]")
 	return &pgRevisions{db: db, typeMap: m}
@@ -374,8 +371,171 @@ func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
+// doRebaseline replaces the existing migration history with a single baseline
+// revision. It validates all preconditions, backs up the old history table,
+// creates a fresh one, and writes the baseline revision — all atomically.
+//
+// Preconditions (all checked before any persistent change):
+//  1. Migration directory checksum is valid (atlas.sum matches files).
+//  2. Exactly one versioned migration file exists in the directory.
+//  3. The migration file version matches the configured rebaseline version.
+//  4. The atlas_schema_revisions table exists and is non-empty.
+//  5. The latest revision version matches the configured rebaseline version.
+//  6. The latest revision is fully applied (applied == total) with no error.
+//
+// Atomic operation (single transaction):
+//  1. Rename atlas_schema_revisions to atlas_schema_revisions_backup_<timestamp>.
+//  2. Rename the primary-key index to <backup_table>_pkey.
+//  3. Create a fresh atlas_schema_revisions table.
+//  4. Write one baseline revision for the migration file.
+//  5. Commit (or rollback on any failure).
+//
+// The migration file SQL is never executed.
+func doRebaseline(ctx context.Context, conn *sql.Conn, dir migrate.Dir, version string, schema string) (err error) {
+	start := time.Now()
+	defer func() {
+		if err != nil {
+			slog.ErrorContext(ctx, "atlas migration: rebaseline failed", "error", err)
+		}
+	}()
+	// 1. Validate migration directory checksum.
+	if err := migrate.Validate(dir); err != nil {
+		return fmt.Errorf("migrate: rebaseline: validate migration dir: %w", err)
+	}
+
+	// 2. Require exactly one migration file.
+	files, err := dir.Files()
+	if err != nil {
+		return fmt.Errorf("migrate: rebaseline: list migration files: %w", err)
+	}
+	if len(files) != 1 {
+		return fmt.Errorf("migrate: rebaseline: expected exactly 1 migration file, found %d", len(files))
+	}
+
+	// 3. Require file version to match configured version.
+	fileVersion := files[0].Version()
+	if fileVersion != version {
+		return fmt.Errorf("migrate: rebaseline: migration file version %q does not match configured version %q", fileVersion, version)
+	}
+
+	// 4. Check history table existence without creating it.
+	var tableExists bool
+	if err := conn.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'atlas_schema_revisions')`,
+		schema,
+	).Scan(&tableExists); err != nil {
+		return fmt.Errorf("migrate: rebaseline: check history table: %w", err)
+	}
+	if !tableExists {
+		return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table does not exist in schema %q", schema)
+	}
+
+	// 5-6. Read the latest revision and validate preconditions.
+	var (
+		latestVersion string
+		applied       int
+		total         int
+		revError      string
+	)
+	if err := conn.QueryRowContext(ctx,
+		`SELECT version, applied, total, error FROM atlas_schema_revisions ORDER BY version DESC LIMIT 1`,
+	).Scan(&latestVersion, &applied, &total, &revError); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("migrate: rebaseline: atlas_schema_revisions table exists but contains no rows")
+		}
+		return fmt.Errorf("migrate: rebaseline: read latest revision: %w", err)
+	}
+	if latestVersion != version {
+		return fmt.Errorf("migrate: rebaseline: latest history version %q does not match configured version %q", latestVersion, version)
+	}
+	if applied != total {
+		return fmt.Errorf("migrate: rebaseline: latest revision %q is partially applied (applied=%d, total=%d)", latestVersion, applied, total)
+	}
+	if revError != "" {
+		return fmt.Errorf("migrate: rebaseline: latest revision %q has error: %s", latestVersion, revError)
+	}
+
+	// --- Begin atomic operation ---
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate: rebaseline: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Generate backup timestamp.
+	now := time.Now().UTC()
+	ts := fmt.Sprintf("%04d%02d%02dT%02d%02d%02d%09dZ",
+		now.Year(), now.Month(), now.Day(),
+		now.Hour(), now.Minute(), now.Second(), now.Nanosecond())
+	backupTable := "atlas_schema_revisions_backup_" + ts
+	backupIndex := backupTable + "_pkey"
+
+	// 1. Rename the existing history table to the backup name.
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("ALTER TABLE %s RENAME TO %s", quoteIdent("atlas_schema_revisions"), quoteIdent(backupTable)),
+	); err != nil {
+		return fmt.Errorf("migrate: rebaseline: rename history table: %w", err)
+	}
+
+	// 2. Rename the primary-key index so the fresh table can use the original name.
+	// PostgreSQL auto-generates the PK index name as <table>_pkey when the
+	// constraint is unnamed (which createRevTable relies on). If a future
+	// change names the constraint explicitly, this must be updated.
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("ALTER INDEX %s RENAME TO %s", quoteIdent("atlas_schema_revisions_pkey"), quoteIdent(backupIndex)),
+	); err != nil {
+		return fmt.Errorf("migrate: rebaseline: rename primary key index: %w", err)
+	}
+
+	// 3. Create the fresh history table.
+	rrw := newPGRevisions(tx)
+	if err := rrw.init(ctx); err != nil {
+		return fmt.Errorf("migrate: rebaseline: create fresh history table: %w", err)
+	}
+
+	// 4. Write the baseline revision. Populate the hash from the migration
+	// file checksum so that Atlas tooling can verify content integrity.
+	var fileHash string
+	if hf, hfErr := dir.Checksum(); hfErr == nil {
+		for _, entry := range hf {
+			if entry.N == files[0].Name() {
+				fileHash = entry.H
+				break
+			}
+		}
+	}
+	rev := &migrate.Revision{
+		Version:     fileVersion,
+		Description: files[0].Desc(),
+		Type:        migrate.RevisionTypeBaseline,
+		Applied:     1,
+		Total:       1,
+		ExecutedAt:  time.Now().UTC(),
+		Hash:        fileHash,
+	}
+	if err := rrw.WriteRevision(ctx, rev); err != nil {
+		return fmt.Errorf("migrate: rebaseline: write baseline revision: %w", err)
+	}
+
+	// 5. Commit.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate: rebaseline: commit: %w", err)
+	}
+
+	slog.InfoContext(ctx, "atlas migration: rebaseline complete",
+		"version", fileVersion,
+		"backup_table", backupTable,
+		"duration_ms", time.Since(start).Milliseconds(),
+	)
+	return nil
+}
+
 // Ensure pgRevisions implements the interface at compile time.
 var _ migrate.RevisionReadWriter = (*pgRevisions)(nil)
 
-// Ensure postgres.Driver satisfies schema.ExecQuerier (checked at compile time via usage in Open).
-var _ atlasschema.ExecQuerier = (*sql.DB)(nil)
+// Compile-time checks: *sql.DB, *sql.Conn, and *sql.Tx all satisfy execQuerier.
+var (
+	_ execQuerier = (*sql.DB)(nil)
+	_ execQuerier = (*sql.Conn)(nil)
+	_ execQuerier = (*sql.Tx)(nil)
+)

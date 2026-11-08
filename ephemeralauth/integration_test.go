@@ -2,6 +2,7 @@ package ephemeralauth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,18 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/mux"
 )
+
+// stubVerifier is a test-only BotVerifier that returns a fixed pass/fail result.
+// It lets the integration test exercise the issuance→protect flow without
+// hitting the real Cloudflare Turnstile API.
+type stubVerifier struct {
+	pass bool
+	err  error
+}
+
+func (s *stubVerifier) Verify(_ context.Context, _ string, _ string) (bool, error) {
+	return s.pass, s.err
+}
 
 // TestIntegration exercises the full flow on a real gorilla/mux router:
 // guest-session middleware on the page route, issuance endpoint, and a

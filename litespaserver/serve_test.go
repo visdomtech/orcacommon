@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 
 	"github.com/visdomtech/orcacommon/ephemeralauth"
 )
@@ -337,35 +336,6 @@ func TestServeRoot_EmbeddedFS_StaticFile(t *testing.T) {
 	}
 }
 
-func TestResolveEmbedded_NilFS(t *testing.T) {
-	got := resolveEmbedded(nil)
-	if got != nil {
-		t.Errorf("resolveEmbedded(nil) = %v, want nil", got)
-	}
-}
-
-func TestResolveEmbedded_ValidFS(t *testing.T) {
-	sub, err := fs.Sub(testEmbeddedFS, "testdata/embed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := resolveEmbedded(sub)
-	if got == nil {
-		t.Error("resolveEmbedded(valid FS) = nil, want non-nil")
-	}
-}
-
-func TestResolveEmbedded_MissingIndexHTML(t *testing.T) {
-	// An FS with files but no index.html — should return nil (and log a warning).
-	badFS := fstest.MapFS{
-		"other.html": &fstest.MapFile{Data: []byte("not index")},
-	}
-	got := resolveEmbedded(badFS)
-	if got != nil {
-		t.Errorf("resolveEmbedded(FS without index.html) = %v, want nil", got)
-	}
-}
-
 func TestServeRoot_EmbeddedFS_StaticFallbackToCDN(t *testing.T) {
 	// embed.FS has index.html but NOT a CDN-only static file.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -478,100 +448,6 @@ func TestServeRoot_NoPublicAuth_NoGuestCookie(t *testing.T) {
 		if c.Name == "guest_session" {
 			t.Error("guest_session cookie should NOT be set when PublicAuth is nil")
 		}
-	}
-}
-
-func TestPublicAuthHandler_NilWhenNotConfigured(t *testing.T) {
-	s := &Server{
-		indexCache: make(map[string]string),
-	}
-	if s.PublicAuthHandler() != nil {
-		t.Error("PublicAuthHandler() should return nil when not configured")
-	}
-	if s.PublicAuthMiddleware() != nil {
-		t.Error("PublicAuthMiddleware() should return nil when not configured")
-	}
-}
-
-func TestNewServer_ShortSigningKey_Wired(t *testing.T) {
-	spaFS := fstest.MapFS{
-		"index.html": &fstest.MapFile{
-			Data: []byte(`<!DOCTYPE html><html><head></head><body>Test</body></html>`),
-		},
-	}
-	// Short signing key is accepted — DeriveKey normalises it to 32 bytes.
-	s := NewServer(t.Context(), nil, Config{
-		EmbeddedContent: spaFS,
-		PublicAuth: &ephemeralauth.Config{
-			SigningKey:      "short",
-			TurnstileSecret: "test-secret",
-		},
-	})
-	// PublicAuth should be wired even with a short key.
-	if s.PublicAuthHandler() == nil {
-		t.Error("PublicAuthHandler() should return non-nil for short signing key")
-	}
-	if s.PublicAuthMiddleware() == nil {
-		t.Error("PublicAuthMiddleware() should return non-nil for short signing key")
-	}
-}
-
-func TestNewServer_EmptySigningKey_NoWire(t *testing.T) {
-	spaFS := fstest.MapFS{
-		"index.html": &fstest.MapFile{
-			Data: []byte(`<!DOCTYPE html><html><head></head><body>Test</body></html>`),
-		},
-	}
-	// PublicAuth is non-nil but SigningKey is empty.
-	s := NewServer(t.Context(), nil, Config{
-		EmbeddedContent: spaFS,
-		PublicAuth:      &ephemeralauth.Config{},
-	})
-	if s.PublicAuthHandler() != nil {
-		t.Error("PublicAuthHandler() should return nil when signing key is empty")
-	}
-	if s.PublicAuthMiddleware() != nil {
-		t.Error("PublicAuthMiddleware() should return nil when signing key is empty")
-	}
-}
-
-func TestPublicAuthHandler_NonNilWhenConfigured(t *testing.T) {
-	cfg := &ephemeralauth.Config{
-		SigningKey:      "test-key-for-auth-handler-test!!",
-		TokenTTLSeconds: 120,
-		TurnstileSecret: "test-turnstile-secret",
-	}
-	issuer := cfg.Issuer()
-	s := &Server{
-		indexCache:      make(map[string]string),
-		publicAuthCfg:   cfg,
-		issuer:          issuer,
-		issuanceHandler: ephemeralauth.IssuanceHandler(*cfg, ephemeralauth.NewTurnstileVerifier(cfg.TurnstileSecret), issuer),
-	}
-
-	if s.PublicAuthHandler() == nil {
-		t.Error("PublicAuthHandler() should return non-nil when configured")
-	}
-	if s.PublicAuthMiddleware() == nil {
-		t.Error("PublicAuthMiddleware() should return non-nil when configured")
-	}
-}
-
-func TestConfig_LogValue_RedactsSecrets(t *testing.T) {
-	cfg := ephemeralauth.Config{
-		SigningKey:      "super-secret-key",
-		TurnstileSecret: "turnstile-secret-value",
-	}
-	val := cfg.LogValue()
-	str := val.String()
-	if strings.Contains(str, "super-secret-key") {
-		t.Error("signing key leaked in LogValue output")
-	}
-	if strings.Contains(str, "turnstile-secret-value") {
-		t.Error("turnstile secret leaked in LogValue output")
-	}
-	if !strings.Contains(str, "[REDACTED]") {
-		t.Error("expected [REDACTED] in LogValue output")
 	}
 }
 

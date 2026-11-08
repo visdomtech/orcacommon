@@ -62,6 +62,12 @@ All packages are stateless libraries consumed by downstream services. The only p
 * **Integration tests:** `postgres/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./postgres/...` (requires Docker for TestContainers). `ephemeralauth/` uses `//go:build integration` tag — run with `go test -race -tags=integration ./ephemeralauth/...` (requires network for live Cloudflare Turnstile API).
 * **Platform-guarded tests:** `utils/embedded_pg_test.go` is excluded on Windows via `//go:build !windows`
 
+**Testing discipline:**
+* **Default to zero tests:** never create or update test files unless the user explicitly asks, or you are writing a pure non-I/O algorithmic function where edge cases must be proven.
+* **Never change production code for tests:** never add hooks, wrappers, interfaces, dependency injection, or override points to support tests. Tests must use the existing design and public API.
+* **Zero mocks:** never mock databases, network layers, or internal packages. Test pure logic directly or run against a real boundary (TestContainers, embedded Postgres, live Turnstile). If a real boundary does not exist, do not write the test.
+* **Zero tautology tests:** never write tests that merely assert framework behavior, type interfaces, or basic getters/setters.
+
 ### 2. Dependency Discipline
 * Keep the dependency tree lean. New external dependencies must be justified.
 * Prefer `pgx/v5` over `lib/pq` for all PostgreSQL operations.

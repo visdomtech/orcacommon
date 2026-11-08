@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.13.0](https://github.com/visdomtech/orcacommon/compare/v0.11.0...v0.13.0) (2026-11-08)
+
+
+### Features
+
+* **lazy:** add generic thread-safe lazy initializer ([4972b7f](https://github.com/visdomtech/orcacommon/commit/4972b7f18b3363dc49783cbe11ab3fc078dfa323))
+
+
+### Bug Fixes
+
+* update testing rules ([7f33269](https://github.com/visdomtech/orcacommon/commit/7f3326905e33986af5828fc245489878ec6f9c9e))
+
 ## [0.11.0](https://github.com/visdomtech/orcacommon/compare/v0.10.0...v0.11.0) (2026-10-21)
 
 

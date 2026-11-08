@@ -34,6 +34,10 @@ func New[T any](init func(ctx context.Context) (*T, error)) *Lazy[T] {
 // Get returns the initialized value, calling init on first access.
 // Concurrent callers are deduplicated via singleflight — only one init
 // runs at a time; others wait for the result.
+//
+// When callers are deduplicated, only the first caller's context is
+// passed to init. Use a context with sufficient lifetime (for example,
+// a background or startup context rather than a per-request context).
 func (l *Lazy[T]) Get(ctx context.Context) (*T, error) {
 	// Fast path: atomic read once successfully initialized (lock-free).
 	if v := l.val.Load(); v != nil {
